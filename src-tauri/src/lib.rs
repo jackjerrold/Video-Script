@@ -1,7 +1,8 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::process::{Command, Stdio};
+use tauri::Emitter;
 use tiny_skia::*;
 
 const PROPS: [(&str, f32); 5] = [("x", 0.0), ("y", 0.0), ("rot", 0.0), ("scale", 1.0), ("opacity", 1.0)];
@@ -109,37 +110,97 @@ fn render(sc: &Scene, t: f32) -> Pixmap {
 }
 
 #[derive(Serialize)]
-struct Preview { png: String, duration: f32 }
+struct Preview {
+    png: String,
+    duration: f32,
+    width: u32,
+    height: u32,
+    fps: u32,
+}
 
 #[tauri::command]
 fn preview(src: String, t: f32) -> Result<Preview, String> {
     let sc = parse(&src)?;
     let png = render(&sc, t).encode_png().map_err(|e| e.to_string())?;
-    Ok(Preview { png: STANDARD.encode(png), duration: sc.dur })
+    Ok(Preview { png: STANDARD.encode(png), duration: sc.dur, width: sc.w, height: sc.h, fps: sc.fps })
+}
+
+fn pick_encoder() -> &'static str {
+    let text = Command::new("ffmpeg")
+        .args(["-hide_banner", "-encoders"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    for e in ["libx264", "libopenh264", "mpeg4"] {
+        if text.contains(&format!(" {e} ")) {
+            return e;
+        }
+    }
+    "mpeg4"
 }
 
 #[tauri::command]
-async fn export(src: String, path: String) -> Result<String, String> {
+async fn export(app: tauri::AppHandle, src: String, path: String) -> Result<String, String> {
     let sc = parse(&src)?;
+    let frames = (sc.dur * sc.fps as f32).round() as u32;
+    if frames == 0 {
+        return Err("duration is too short to produce any frames".into());
+    }
+
+    let enc = pick_encoder();
+    let size = format!("{}x{}", sc.w, sc.h);
+    let fps = sc.fps.to_string();
+    let mut args = vec![
+        "-y", "-loglevel", "error",
+        "-f", "rawvideo", "-pix_fmt", "rgba",
+        "-s", size.as_str(), "-r", fps.as_str(),
+        "-i", "-",
+        "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+        "-c:v", enc, "-pix_fmt", "yuv420p",
+    ];
+    if enc != "libx264" {
+        args.extend(["-b:v", "8M"]); // the fallback encoders need an explicit bitrate
+    }
+    args.extend(["-movflags", "+faststart", path.as_str()]);
+
     let mut ff = Command::new("ffmpeg")
-        .args(["-y", "-f", "rawvideo", "-pix_fmt", "rgba",
-               "-s", &format!("{}x{}", sc.w, sc.h), "-r", &sc.fps.to_string(),
-               "-i", "-", "-c:v", "libx264", "-pix_fmt", "yuv420p", &path])
+        .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("couldn't start ffmpeg: {e}"))?;
+        .map_err(|e| format!("couldn't start ffmpeg (is it installed and on PATH?): {e}"))?;
+
+    // Drain stderr on a thread so ffmpeg can never block on a full pipe.
+    let mut stderr = ff.stderr.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = stderr.read_to_string(&mut s);
+        s
+    });
 
     let mut stdin = ff.stdin.take().unwrap();
-    let frames = (sc.dur * sc.fps as f32).round() as u32;
+    let mut write_failed = false;
     for i in 0..frames {
         let pm = render(&sc, i as f32 / sc.fps as f32);
-        stdin.write_all(pm.data()).map_err(|e| e.to_string())?;
+        if stdin.write_all(pm.data()).is_err() {
+            write_failed = true; // ffmpeg died; its stderr will tell us why
+            break;
+        }
+        let _ = app.emit("export-progress", (i + 1) as f32 / frames as f32);
     }
     drop(stdin);
 
-    if ff.wait().map_err(|e| e.to_string())?.success() { Ok(format!("saved {path}")) } else { Err("ffmpeg failed".into()) }
+    let status = ff.wait().map_err(|e| e.to_string())?;
+    let log = reader.join().unwrap_or_default();
+
+    if status.success() && !write_failed {
+        Ok(format!("Saved {path}"))
+    } else {
+        let lines: Vec<&str> = log.lines().rev().take(3).collect();
+        let detail = lines.into_iter().rev().collect::<Vec<_>>().join(" | ");
+        Err(if detail.is_empty() { "ffmpeg failed with no output".into() } else { format!("ffmpeg: {detail}") })
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
