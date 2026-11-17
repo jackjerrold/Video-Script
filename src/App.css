@@ -7,6 +7,7 @@
   --muted: #8a8aa3;
   --accent: #6c8cff;
   --danger: #ff6b6b;
+  --warn: #ffb454;
 }
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
@@ -33,26 +34,43 @@ input.path { width: 280px; font-family: ui-monospace, monospace; font-size: 12px
 
 main { flex: 1; display: flex; gap: 12px; padding: 12px; min-height: 0; }
 .panel {
-  display: flex; flex-direction: column; min-width: 0;
+  display: flex; flex-direction: column; min-width: 0; min-height: 0;
   background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
 }
-.editor { flex: 0 0 40%; }
+.editor { flex: 0 0 42%; }
 .viewer { flex: 1; }
 .panel-title {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 8px 14px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.8px;
+  display: flex; justify-content: space-between; align-items: center; min-height: 38px;
+  padding: 0 14px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.8px;
   color: var(--muted); border-bottom: 1px solid var(--border);
 }
 .meta { text-transform: none; letter-spacing: 0; font-family: ui-monospace, monospace; }
 
 textarea {
-  flex: 1; resize: none; border: none; outline: none; padding: 14px;
+  flex: 1; min-height: 0; resize: none; border: none; outline: none; padding: 14px;
   background: transparent; color: var(--text);
   font: 13px/1.6 ui-monospace, "SF Mono", Menlo, monospace; tab-size: 2;
 }
 
+/* diagnostics */
+.diags { max-height: 34%; overflow: auto; border-top: 1px solid var(--border); font-size: 12px; }
+.diag-ok { padding: 8px 14px; color: var(--muted); }
+.diag { padding: 7px 14px; cursor: pointer; border-left: 3px solid transparent; }
+.diag:hover { background: #20202e; }
+.diag.error { border-left-color: var(--danger); }
+.diag.warning { border-left-color: var(--warn); }
+.diag .code { font-family: ui-monospace, monospace; color: var(--muted); margin-right: 8px; }
+.diag .loc { font-family: ui-monospace, monospace; color: var(--accent); margin-right: 8px; }
+.diag .help { margin-top: 2px; color: var(--muted); }
+
+/* tabs */
+.tabs { display: flex; gap: 4px; }
+.tab { border: none; background: transparent; color: var(--muted); padding: 4px 10px; text-transform: uppercase; letter-spacing: 0.8px; font-size: 12px; }
+.tab.active { color: var(--text); background: #232332; }
+
 .stage { flex: 1; display: flex; align-items: center; justify-content: center; padding: 16px; min-height: 0; background: #0d0d13; }
 .stage img { max-width: 100%; max-height: 100%; border-radius: 4px; box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5); }
+.debug { flex: 1; margin: 0; padding: 14px; overflow: auto; background: #0d0d13; font: 12px/1.5 ui-monospace, monospace; color: #c8c8d8; }
 
 .controls { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-top: 1px solid var(--border); }
 .controls input[type="range"] { flex: 1; padding: 0; accent-color: var(--accent); }
@@ -61,8 +79,7 @@ textarea {
 .status {
   display: flex; align-items: center; gap: 12px;
   padding: 7px 16px; font-size: 12px; color: var(--muted);
-  background: var(--panel); border-top: 1px solid var(--border);
-  white-space: pre-wrap;
+  background: var(--panel); border-top: 1px solid var(--border); white-space: pre-wrap;
 }
 .status.error { color: var(--danger); }
 .bar { flex: 1; max-width: 300px; height: 6px; background: #2a2a3a; border-radius: 3px; overflow: hidden; }

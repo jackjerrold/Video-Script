@@ -1,0 +1,99 @@
+//! Stage 4 output: the intermediate representation (IR).
+//!
+//! The IR is what is left after semantic analysis: no variables, no
+//! expressions, no names to resolve. Every value is already computed. It is
+//! deliberately plain data that derives `Serialize`, so it can be dumped to
+//! JSON, tested, optimized, or consumed by any backend.
+//!
+//! Each shape owns a list of [`Prop`]s (one per property in its schema), and
+//! each prop owns a sorted timeline of [`Key`]s.
+
+use super::schema::ShapeKind;
+use super::value::{Rgb, Value};
+use serde::Serialize;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Easing {
+    Linear,
+    In,
+    Out,
+    InOut,
+    Step,
+}
+
+impl Easing {
+    /// Map linear progress `t` (0..=1) to eased progress.
+    pub fn apply(self, t: f64) -> f64 {
+        let t = t.clamp(0.0, 1.0);
+        match self {
+            Easing::Linear => t,
+            Easing::In => t * t,
+            Easing::Out => 1.0 - (1.0 - t) * (1.0 - t),
+            Easing::InOut => {
+                if t < 0.5 {
+                    2.0 * t * t
+                } else {
+                    1.0 - (-2.0 * t + 2.0).powi(2) / 2.0
+                }
+            }
+            Easing::Step => {
+                if t >= 1.0 {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Program {
+    pub video: Video,
+    pub shapes: Vec<Shape>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Video {
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub duration: f64,
+    pub background: Rgb,
+}
+
+impl Video {
+    pub fn frame_count(&self) -> u32 {
+        ((self.duration * self.fps as f64).round() as u32).max(1)
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Shape {
+    pub name: String,
+    pub kind: ShapeKind,
+    pub props: Vec<Prop>,
+}
+
+/// One animatable property of one shape.
+///
+/// If `keys` is empty the property is constant and equals `base`. Otherwise
+/// `keys` is sorted by time and fully describes the value over time; if the
+/// user's first keyframe was after t=0, lowering inserted a synthetic key at
+/// t=0 holding `base`, so evaluation never needs a special case.
+#[derive(Clone, Debug, Serialize)]
+pub struct Prop {
+    pub name: &'static str,
+    pub base: Value,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<Key>,
+}
+
+/// A keyframe. `ease` shapes the segment that *ends* at this key.
+#[derive(Clone, Debug, Serialize)]
+pub struct Key {
+    pub time: f64,
+    pub value: Value,
+    pub ease: Easing,
+}

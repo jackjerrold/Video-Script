@@ -3,52 +3,113 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 
-type Preview = { png: string; duration: number; width: number; height: number; fps: number };
+type Diag = {
+  severity: "error" | "warning";
+  code: string;
+  message: string;
+  line: number;
+  col: number;
+  end_line: number;
+  end_col: number;
+  help: string | null;
+  rendered: string;
+};
+type Info = { width: number; height: number; fps: number; duration: number };
+type PreviewResult = { png: string | null; info: Info | null; diagnostics: Diag[] };
+type Tab = "preview" | "tokens" | "ast" | "ir";
 
-const DEFAULT = `video 640 360 30 4
-rect box 80 80 #ff5555
-circle ball 30 #55aaff
+const TABS: { id: Tab; label: string }[] = [
+  { id: "preview", label: "Preview" },
+  { id: "tokens", label: "Tokens" },
+  { id: "ast", label: "AST" },
+  { id: "ir", label: "IR" },
+];
 
-at 0 box x=60 y=180 rot=0
-at 4 box x=580 y=180 rot=360
+const DEFAULT = `// Keyframe Studio: try editing me!
+video {
+  width: 640;
+  height: 360;
+  fps: 30;
+  duration: 4s;
+  background: #14141c;
+}
 
-at 0 ball x=320 y=40 scale=1
-at 2 ball x=320 y=320 scale=2
-at 4 ball x=320 y=40 scale=1
+let red  = #ff5555;
+let blue = #55aaff;
+let mid  = height / 2;
+
+rect box {
+  x: 60;
+  y: mid;
+  w: 80;
+  h: 80;
+  fill: red;
+}
+
+circle ball {
+  x: width / 2;
+  y: 40;
+  r: 30;
+  fill: blue;
+}
+
+// A keyframe sets values at a time. 'ease' shapes the move that ends there.
+at 4s box ease in_out {
+  x: width - 60;
+  rot: 360;
+  fill: #ffcc00;
+}
+
+at 2s ball ease in_out { y: height - 40; r: 60; }
+at 4s ball ease in_out { y: 40; r: 30; }
 `;
 
 export default function App() {
   const [src, setSrc] = useState(DEFAULT);
   const [t, setT] = useState(0);
-  const [info, setInfo] = useState<Preview | null>(null);
-  const [error, setError] = useState("");
+  const [img, setImg] = useState("");
+  const [info, setInfo] = useState<Info | null>(null);
+  const [diags, setDiags] = useState<Diag[]>([]);
+  const [tab, setTab] = useState<Tab>("preview");
+  const [debug, setDebug] = useState("");
   const [playing, setPlaying] = useState(false);
   const [out, setOut] = useState("/tmp/out.mp4");
   const [exporting, setExporting] = useState(false);
   const [progress, setProgress] = useState(0);
   const [exportMsg, setExportMsg] = useState("");
 
+  const editor = useRef<HTMLTextAreaElement>(null);
   const sent = useRef(0);
   const shown = useRef(0);
-  const dur = info?.duration ?? 4;
 
-  // Render a preview frame whenever the script or time changes.
+  const dur = info?.duration ?? 4;
+  const errors = diags.filter((d) => d.severity === "error").length;
+  const warnings = diags.length - errors;
+
+  // Compile + render a preview frame whenever the script or time changes.
   useEffect(() => {
     const id = ++sent.current;
-    invoke<Preview>("preview", { src, t })
+    invoke<PreviewResult>("preview", { src, t })
       .then((r) => {
         if (id < shown.current) return; // ignore out-of-order responses
         shown.current = id;
-        setInfo(r);
-        setError("");
-        if (t > r.duration) setT(r.duration);
+        setDiags(r.diagnostics);
+        if (r.png) setImg(r.png); // on errors, keep the last good frame
+        if (r.info) {
+          setInfo(r.info);
+          if (t > r.info.duration) setT(r.info.duration);
+        }
       })
-      .catch((e) => {
-        if (id < shown.current) return;
-        shown.current = id;
-        setError(String(e));
-      });
+      .catch((e) => setExportMsg(String(e)));
   }, [src, t]);
+
+  // Debug tabs show an intermediate compiler stage.
+  useEffect(() => {
+    if (tab === "preview") return;
+    invoke<string>("debug_stage", { src, stage: tab })
+      .then(setDebug)
+      .catch((e) => setDebug(String(e)));
+  }, [src, tab]);
 
   // Playback loop.
   useEffect(() => {
@@ -68,7 +129,9 @@ export default function App() {
   // Export progress events from Rust.
   useEffect(() => {
     const un = listen<number>("export-progress", (e) => setProgress(e.payload));
-    return () => { un.then((f) => f()); };
+    return () => {
+      un.then((f) => f());
+    };
   }, []);
 
   const doExport = async () => {
@@ -85,6 +148,19 @@ export default function App() {
     }
   };
 
+  // Click a diagnostic to select the offending text in the editor.
+  const jumpTo = (d: Diag) => {
+    const el = editor.current;
+    if (!el) return;
+    const lines = src.split("\n");
+    let start = 0;
+    for (let i = 0; i < d.line - 1; i++) start += lines[i].length + 1;
+    start += d.col - 1;
+    const len = d.end_line === d.line ? Math.max(1, d.end_col - d.col) : 1;
+    el.focus();
+    el.setSelectionRange(start, start + len);
+  };
+
   const failed = exportMsg.startsWith("Export failed");
 
   return (
@@ -99,7 +175,7 @@ export default function App() {
           placeholder="/path/to/output.mp4"
           spellCheck={false}
         />
-        <button className="primary" onClick={doExport} disabled={exporting || !!error}>
+        <button className="primary" onClick={doExport} disabled={exporting || errors > 0}>
           {exporting ? "Exporting…" : "Export MP4"}
         </button>
       </header>
@@ -107,42 +183,86 @@ export default function App() {
       <main>
         <section className="panel editor">
           <div className="panel-title">Script</div>
-          <textarea value={src} onChange={(e) => setSrc(e.target.value)} spellCheck={false} />
+          <textarea ref={editor} value={src} onChange={(e) => setSrc(e.target.value)} spellCheck={false} />
+          <div className="diags">
+            {diags.length === 0 ? (
+              <div className="diag-ok">✓ No problems</div>
+            ) : (
+              diags.map((d, i) => (
+                <div key={i} className={`diag ${d.severity}`} onClick={() => jumpTo(d)}>
+                  <div>
+                    <span className="code">{d.code}</span>
+                    <span className="loc">
+                      {d.line}:{d.col}
+                    </span>
+                    {d.message}
+                  </div>
+                  {d.help && <div className="help">{d.help}</div>}
+                </div>
+              ))
+            )}
+          </div>
         </section>
 
         <section className="panel viewer">
           <div className="panel-title">
-            Preview
-            {info && <span className="meta">{info.width}×{info.height} · {info.fps} fps · {info.duration}s</span>}
+            <div className="tabs">
+              {TABS.map((x) => (
+                <button key={x.id} className={tab === x.id ? "tab active" : "tab"} onClick={() => setTab(x.id)}>
+                  {x.label}
+                </button>
+              ))}
+            </div>
+            {info && (
+              <span className="meta">
+                {info.width}×{info.height} · {info.fps} fps · {info.duration}s
+              </span>
+            )}
           </div>
-          <div className="stage">
-            {info && <img src={`data:image/png;base64,${info.png}`} alt="preview" />}
-          </div>
-          <div className="controls">
-            <button onClick={() => setPlaying((p) => !p)}>{playing ? "⏸" : "▶"}</button>
-            <input
-              type="range"
-              min={0}
-              max={dur}
-              step={0.01}
-              value={Math.min(t, dur)}
-              onChange={(e) => { setPlaying(false); setT(+e.target.value); }}
-            />
-            <span className="time">{t.toFixed(2)} / {dur.toFixed(2)}s</span>
-          </div>
+
+          {tab === "preview" ? (
+            <>
+              <div className="stage">{img && <img src={`data:image/png;base64,${img}`} alt="preview" />}</div>
+              <div className="controls">
+                <button onClick={() => setPlaying((p) => !p)}>{playing ? "⏸" : "▶"}</button>
+                <input
+                  type="range"
+                  min={0}
+                  max={dur}
+                  step={0.01}
+                  value={Math.min(t, dur)}
+                  onChange={(e) => {
+                    setPlaying(false);
+                    setT(+e.target.value);
+                  }}
+                />
+                <span className="time">
+                  {t.toFixed(2)} / {dur.toFixed(2)}s
+                </span>
+              </div>
+            </>
+          ) : (
+            <pre className="debug">{debug}</pre>
+          )}
         </section>
       </main>
 
-      <footer className={error || failed ? "status error" : "status"}>
-        {error ? (
-          <>⚠ {error}</>
-        ) : exporting ? (
+      <footer className={errors > 0 || failed ? "status error" : "status"}>
+        {exporting ? (
           <>
             <span>Exporting {Math.round(progress * 100)}%</span>
-            <div className="bar"><div style={{ width: `${progress * 100}%` }} /></div>
+            <div className="bar">
+              <div style={{ width: `${progress * 100}%` }} />
+            </div>
           </>
+        ) : exportMsg ? (
+          exportMsg
+        ) : errors > 0 ? (
+          `${errors} error${errors > 1 ? "s" : ""}${warnings ? `, ${warnings} warning${warnings > 1 ? "s" : ""}` : ""}`
+        ) : warnings > 0 ? (
+          `${warnings} warning${warnings > 1 ? "s" : ""}`
         ) : (
-          exportMsg || "Ready"
+          "Ready"
         )}
       </footer>
     </div>

@@ -42,7 +42,7 @@ flowchart LR
     G --> H[MP4]
 ```
 
-- **Backend (Rust):** parses the script, evaluates every property at time `t`, rasterizes a frame with [`tiny-skia`](https://github.com/RazrFalcon/tiny-skia), and either returns it as a PNG (preview) or streams raw RGBA frames into `ffmpeg` (export).
+- **Backend (Rust):** parses the script, evaluates every property at time `t`, rasterizes a frame with [`tiny-skia`](https://github.cyom/RazrFalcon/tiny-skia), and either returns it as a PNG (preview) or streams raw RGBA frames into `ffmpeg` (export).
 - **Frontend (React + TypeScript):** a script editor, a preview with a scrubber and play/pause, and an export button with progress.
 - Preview and export share the **same renderer**, so what you scrub is exactly what you export.
 
