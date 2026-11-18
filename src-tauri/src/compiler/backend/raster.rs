@@ -1,8 +1,11 @@
 //! Raster backend: draws a frame into a pixel buffer with `tiny-skia`.
 //!
 //! This is the only place that knows how a shape *looks*. To support a new
-//! shape, add a match arm in [`shape_path`].
+//! shape, add a match arm in [`shape_path`]. Positioning, rotation, scaling,
+//! group nesting and opacity are already resolved into `world` and `opacity`
+//! by the evaluator, so shapes are described around their own origin.
 
+use super::text;
 use crate::compiler::eval::{DrawShape, Frame};
 use crate::compiler::schema::ShapeKind;
 use tiny_skia::*;
@@ -13,21 +16,18 @@ pub fn draw(frame: &Frame) -> Pixmap {
     pm.fill(Color::from_rgba8(bg.0, bg.1, bg.2, 255));
 
     for s in &frame.shapes {
-        let opacity = s.num("opacity").clamp(0.0, 1.0);
-        if opacity <= 0.0 {
+        if s.opacity <= 0.0 {
             continue;
         }
         let Some(path) = shape_path(s) else { continue };
 
         let fill = s.color("fill");
         let mut paint = Paint::default();
-        paint.set_color_rgba8(fill.0, fill.1, fill.2, (opacity * 255.0).round() as u8);
+        paint.set_color_rgba8(fill.0, fill.1, fill.2, (s.opacity * 255.0).round() as u8);
         paint.anti_alias = true;
 
-        let scale = s.num("scale") as f32;
-        let tf = Transform::from_translate(s.num("x") as f32, s.num("y") as f32)
-            .pre_rotate(s.num("rot") as f32)
-            .pre_scale(scale, scale);
+        let w = &s.world;
+        let tf = Transform::from_row(w.a as f32, w.b as f32, w.c as f32, w.d as f32, w.e as f32, w.f as f32);
         pm.fill_path(&path, &paint, FillRule::Winding, tf, None);
     }
     pm
@@ -51,6 +51,9 @@ fn shape_path(s: &DrawShape) -> Option<Path> {
             }
             PathBuilder::from_circle(0.0, 0.0, r)
         }
+        ShapeKind::Text => text::text_path(s.text("text"), s.num("size") as f32),
+        // Groups are flattened away by the evaluator and never reach a backend.
+        ShapeKind::Group => None,
     }
 }
 

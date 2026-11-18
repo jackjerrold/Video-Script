@@ -63,6 +63,13 @@ pub struct Video {
     pub background: Rgb,
 }
 
+impl Program {
+    /// Find a node anywhere in the tree by name.
+    pub fn find(&self, name: &str) -> Option<&Shape> {
+        self.shapes.iter().find_map(|s| s.find(name))
+    }
+}
+
 impl Video {
     pub fn frame_count(&self) -> u32 {
         ((self.duration * self.fps as f64).round() as u32).max(1)
@@ -74,6 +81,18 @@ pub struct Shape {
     pub name: String,
     pub kind: ShapeKind,
     pub props: Vec<Prop>,
+    /// Non-empty only for groups. Children are drawn in order, after the parent's transform.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<Shape>,
+}
+
+impl Shape {
+    pub fn find(&self, name: &str) -> Option<&Shape> {
+        if self.name == name {
+            return Some(self);
+        }
+        self.children.iter().find_map(|c| c.find(name))
+    }
 }
 
 /// One animatable property of one shape.

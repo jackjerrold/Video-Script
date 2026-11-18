@@ -26,42 +26,40 @@ const TABS: { id: Tab; label: string }[] = [
 ];
 
 const DEFAULT = `// Keyframe Studio: try editing me!
-video {
-  width: 640;
-  height: 360;
-  fps: 30;
-  duration: 4s;
-  background: #14141c;
-}
+video { width: 640; height: 360; fps: 30; duration: 5s; background: #0f1020; }
 
-let red  = #ff5555;
-let blue = #55aaff;
-let mid  = height / 2;
+let gold = #ffcc00;
+let sky  = #55aaff;
 
-rect box {
-  x: 60;
-  y: mid;
-  w: 80;
-  h: 80;
-  fill: red;
-}
-
-circle ball {
+text title {
+  text: "Keyframes";
+  size: 52;
   x: width / 2;
-  y: 40;
-  r: 30;
-  fill: blue;
+  y: 60;
+  opacity: 0;
 }
 
-// A keyframe sets values at a time. 'ease' shapes the move that ends there.
-at 4s box ease in_out {
-  x: width - 60;
-  rot: 360;
-  fill: #ffcc00;
+// A group: children are positioned relative to the group's own origin,
+// and animating the group moves, rotates and fades them all together.
+group robot {
+  x: 100;
+  y: 250;
+  rect body   { w: 70; h: 90; fill: sky; }
+  circle head { y: -70; r: 28; fill: gold; }
+  rect arm    { x: 50; y: -10; w: 40; h: 12; fill: #ff5555; }
 }
 
-at 2s ball ease in_out { y: height - 40; r: 60; }
-at 4s ball ease in_out { y: 40; r: 30; }
+// Relative keyframes: "x: x + 440" means "440 further than where it was".
+at 1s title ease out { opacity: 1; y: y + 20; }
+at 2.5s title { text: "Groups"; }
+at 4s title { text: "and Text"; }
+
+at 4s robot ease in_out { x: x + 440; rot: 20; }
+at 5s robot ease in_out { x: x - 440; rot: 0; }
+
+// Children can still be animated on their own, inside the moving group.
+at 2s head ease out { y: y - 20; }
+at 3s head ease in  { y: y + 20; }
 `;
 
 export default function App() {

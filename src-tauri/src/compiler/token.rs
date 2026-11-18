@@ -19,6 +19,7 @@ pub enum TokenKind {
     Let,
     At,
     Video,
+    Group,
 
     // Punctuation
     LBrace,
@@ -49,6 +50,7 @@ impl TokenKind {
             TokenKind::Let => "'let'".into(),
             TokenKind::At => "'at'".into(),
             TokenKind::Video => "'video'".into(),
+            TokenKind::Group => "'group'".into(),
             TokenKind::LBrace => "'{'".into(),
             TokenKind::RBrace => "'}'".into(),
             TokenKind::LParen => "'('".into(),

@@ -4,14 +4,21 @@
 //! the property evaluates to at any time. To add a pass, write the function
 //! and call it from [`run`]. Order matters a little: passes run top to bottom.
 
-use super::ir::{Program, Prop};
+use super::ir::{Program, Prop, Shape};
 
 pub fn run(program: &mut Program) {
     for shape in &mut program.shapes {
-        for prop in &mut shape.props {
-            collapse_constant_tracks(prop);
-            remove_redundant_keys(prop);
-        }
+        optimize_shape(shape);
+    }
+}
+
+fn optimize_shape(shape: &mut Shape) {
+    for prop in &mut shape.props {
+        collapse_constant_tracks(prop);
+        remove_redundant_keys(prop);
+    }
+    for child in &mut shape.children {
+        optimize_shape(child);
     }
 }
 

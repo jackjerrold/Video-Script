@@ -128,6 +128,7 @@ impl<'a> Lexer<'a> {
             "let" => TokenKind::Let,
             "at" => TokenKind::At,
             "video" => TokenKind::Video,
+            "group" => TokenKind::Group,
             _ => TokenKind::Ident(text.to_string()),
         })
     }

@@ -14,10 +14,10 @@
 //!     |  optimize   IR -> smaller IR          (optimize.rs)
 //!     v
 //!  IR
-//!     |  eval       IR @ time t -> Frame      (eval.rs)
+//!     |  eval       IR @ time t -> Frame      (eval.rs, geom.rs)
 //!     v
 //!  Frame
-//!     |  backend    Frame -> pixels           (backend/raster.rs)
+//!     |  backend    Frame -> pixels           (backend/raster.rs, backend/text.rs)
 //!     v
 //!  video (via ffmpeg, in ../video.rs)
 //! ```
@@ -30,6 +30,7 @@ pub mod backend;
 pub mod builtins;
 pub mod diagnostics;
 pub mod eval;
+pub mod geom;
 pub mod ir;
 pub mod lexer;
 pub mod optimize;

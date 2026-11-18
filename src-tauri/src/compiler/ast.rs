@@ -64,6 +64,14 @@ pub struct PropAssign {
     pub span: Span,
 }
 
+/// `{ prop: value; shape ...; group ...; }`: the body of a group.
+#[derive(Debug, Clone)]
+pub struct GroupBody {
+    pub props: Vec<PropAssign>,
+    pub children: Vec<Item>,
+    pub span: Span,
+}
+
 /// `{ prop: value; ... }`
 #[derive(Debug, Clone)]
 pub struct Block {
@@ -85,6 +93,8 @@ pub enum ItemKind {
     Let { name: Ident, value: Expr },
     /// `rect box { ... }`: the kind is an identifier, resolved later.
     Shape { kind: Ident, name: Ident, body: Block },
+    /// `group name { props; children }`: children are shape or group items.
+    Group { name: Ident, body: GroupBody },
     /// `at 2s box [ease curve] { ... }`
     At { time: Expr, target: Ident, ease: Option<Ident>, body: Block },
 }

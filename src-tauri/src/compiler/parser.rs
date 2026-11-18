@@ -8,7 +8,9 @@
 //! item       = "video" block
 //!            | "let" IDENT "=" expr ";"
 //!            | "at" expr IDENT [ "ease" IDENT ] block
-//!            | IDENT IDENT block ;                 (* shape declaration *)
+//!            | IDENT IDENT block                   (* shape declaration *)
+//!            | group ;
+//! group      = "group" IDENT "{" { prop | IDENT IDENT block | group } "}" ;
 //! block      = "{" { prop } "}" ;
 //! prop       = IDENT ":" expr [ "ease" IDENT ] ";" ;
 //! expr       = term { ("+" | "-") term } ;
@@ -158,7 +160,7 @@ impl Parser {
                         return;
                     }
                 }
-                TokenKind::Let | TokenKind::At | TokenKind::Video if depth == 0 => return,
+                TokenKind::Let | TokenKind::At | TokenKind::Video | TokenKind::Group if depth == 0 => return,
                 _ => {
                     self.bump();
                 }
@@ -190,6 +192,7 @@ impl Parser {
                 let body = self.parse_block()?;
                 Ok(Item { span: start.to(body.span), kind: ItemKind::At { time, target, ease, body } })
             }
+            TokenKind::Group => self.parse_group(),
             TokenKind::Ident(_) => {
                 let kind = self.expect_ident("a shape kind")?;
                 let name = self.expect_ident("a name for the shape")?;
@@ -204,6 +207,49 @@ impl Parser {
                 ),
             ),
         }
+    }
+
+    /// `group name { prop: value; child shapes and groups }`
+    ///
+    /// Inside the body, what comes next decides what it is: `IDENT :` is a
+    /// property, `IDENT IDENT` starts a child shape, `group` a nested group.
+    fn parse_group(&mut self) -> PResult<Item> {
+        let start = self.bump().span; // 'group'
+        let name = self.expect_ident("a name for the group")?;
+        let open = self.expect(&TokenKind::LBrace, "'{'")?;
+        let mut props = Vec::new();
+        let mut children = Vec::new();
+        while !self.check(&TokenKind::RBrace) && !self.check(&TokenKind::Eof) {
+            let second = self.toks.get(self.pos + 1).map(|t| t.kind.clone());
+            match (self.peek().kind.clone(), second) {
+                (TokenKind::Ident(_), Some(TokenKind::Colon)) => match self.parse_prop() {
+                    Ok(p) => props.push(p),
+                    Err(()) => self.sync_prop(),
+                },
+                (TokenKind::Ident(_), Some(TokenKind::Ident(_))) | (TokenKind::Group, _) => {
+                    match self.parse_item() {
+                        Ok(item) => children.push(item),
+                        Err(()) => self.sync_item(),
+                    }
+                }
+                (other, _) => {
+                    let span = self.peek().span;
+                    let mut d = Diagnostic::error(
+                        "P001",
+                        span,
+                        format!("expected a property, a shape or a group inside this group, found {}", other.describe()),
+                    );
+                    if matches!(other, TokenKind::At | TokenKind::Let | TokenKind::Video) {
+                        d = d.with_help("'at', 'let' and 'video' go at the top level, outside any group");
+                    }
+                    self.diags.push(d);
+                    self.sync_prop();
+                }
+            }
+        }
+        let close = self.expect(&TokenKind::RBrace, "'}'")?;
+        let span = start.to(close.span);
+        Ok(Item { span, kind: ItemKind::Group { name, body: GroupBody { props, children, span: open.span.to(close.span) } } })
     }
 
     /// `ease NAME` is a contextual keyword: only meaningful right here.

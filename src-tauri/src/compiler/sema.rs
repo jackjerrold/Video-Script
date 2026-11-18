@@ -2,19 +2,24 @@
 //!
 //! The parser only checks *shape*; this stage checks *meaning*:
 //!
-//! * symbol tables: `let` variables, shape names, the built-in `width`,
+//! * symbol tables: `let` variables, node names, the built-in `width`,
 //!   `height`, `fps`, `duration`
 //! * type checking: every property value must match its schema type
-//! * constant evaluation: all expressions (`width / 2 + 10`, `rgb(...)`,
-//!   `cos(30)`) are folded to plain values, so the IR contains no expressions
-//! * validation: unknown shapes/properties/easings (with "did you mean"),
-//!   duplicates, ranges, keyframes after the end of the video, unused variables
+//! * constant evaluation: expressions (`width / 2 + 10`, `rgb(...)`, `cos(30)`)
+//!   are folded to plain values
+//! * **relative keyframes**: inside an `at` block a property name means "this
+//!   property's value before this keyframe", so `x: x + 100` moves by 100.
+//!   Those expressions cannot be folded yet, so they stay symbolic ([`Sym`])
+//!   until every keyframe is known and can be resolved in time order
+//! * **groups**: `group` nodes form a tree; names are global
+//! * validation: unknown names (with "did you mean"), duplicates, ranges,
+//!   keyframes after the end of the video, unused or shadowed variables
 //! * lowering: building the sorted per-property keyframe timelines of the IR
 //!
-//! It runs in two passes: first the `video` block (which defines the built-in
-//! constants), then everything else in source order. A `let` must come before
-//! its first use. Errors never abort the pass: it records a diagnostic and
-//! keeps going so the user sees every problem at once.
+//! Two passes: first the `video` block (it defines the built-in constants),
+//! then everything else in source order. A `let` must come before its first
+//! use. Errors never abort a pass: each records a diagnostic and moves on, so
+//! the user sees every problem at once.
 
 use super::ast::*;
 use super::builtins;
@@ -32,10 +37,11 @@ pub fn analyze(ast: &Program) -> (Option<ir::Program>, Vec<Diagnostic>) {
         diags: Vec::new(),
         vars: HashMap::new(),
         bad_vars: HashSet::new(),
-        shapes: Vec::new(),
-        shape_ix: HashMap::new(),
+        nodes: Vec::new(),
+        node_ix: HashMap::new(),
         poisoned: HashSet::new(),
         duration: 0.0,
+        seq: 0,
     };
     let program = s.run(ast);
     let mut diags = s.diags;
@@ -44,6 +50,74 @@ pub fn analyze(ast: &Program) -> (Option<ir::Program>, Vec<Diagnostic>) {
     (program, diags)
 }
 
+// ---- symbolic values ---------------------------------------------------------
+
+/// A value that may depend on the *previous value of a property*.
+///
+/// Everything that does not mention a property folds to `Const` immediately.
+#[derive(Debug, Clone)]
+enum Sym {
+    Const(Value),
+    /// "The value of this property just before this keyframe".
+    Prop(&'static str, Ty),
+    Neg(Box<Sym>),
+    Bin(BinOp, Box<Sym>, Box<Sym>),
+    Call(&'static str, Vec<Sym>, Ty),
+}
+
+type ResolveError = (&'static str, String);
+
+impl Sym {
+    fn ty(&self) -> Ty {
+        match self {
+            Sym::Const(v) => v.ty(),
+            Sym::Prop(_, t) | Sym::Call(_, _, t) => *t,
+            Sym::Neg(_) | Sym::Bin(..) => Ty::Number,
+        }
+    }
+
+    /// Compute the value given each property's current value.
+    fn resolve(&self, env: &HashMap<&'static str, Value>) -> Result<Value, ResolveError> {
+        match self {
+            Sym::Const(v) => Ok(v.clone()),
+            Sym::Prop(name, _) => env
+                .get(name)
+                .cloned()
+                .ok_or(("S007", format!("no current value for property '{name}'"))),
+            Sym::Neg(e) => match e.resolve(env)? {
+                Value::Number(n) => Ok(Value::Number(-n)),
+                other => Err(("S005", format!("cannot negate a {}", other.ty()))),
+            },
+            Sym::Bin(op, l, r) => match (l.resolve(env)?, r.resolve(env)?) {
+                (Value::Number(a), Value::Number(b)) => {
+                    let out = match op {
+                        BinOp::Add => a + b,
+                        BinOp::Sub => a - b,
+                        BinOp::Mul => a * b,
+                        BinOp::Div => {
+                            if b == 0.0 {
+                                return Err(("S008", "division by zero".into()));
+                            }
+                            a / b
+                        }
+                    };
+                    if !out.is_finite() {
+                        return Err(("S017", "result is not a finite number".into()));
+                    }
+                    Ok(Value::Number(out))
+                }
+                (a, b) => Err(("S005", format!("cannot apply '{}' to a {} and a {}", op.symbol(), a.ty(), b.ty()))),
+            },
+            Sym::Call(name, args, _) => {
+                let vals = args.iter().map(|a| a.resolve(env)).collect::<Result<Vec<_>, _>>()?;
+                builtins::call(name, &vals).map_err(|m| ("S005", m))
+            }
+        }
+    }
+}
+
+// ---- analysis state ------------------------------------------------------------
+
 struct Var {
     value: Value,
     span: Span,
@@ -51,10 +125,30 @@ struct Var {
     builtin: bool,
 }
 
-struct ShapeInfo {
+/// One property assignment inside an `at` block, not yet resolved.
+struct PendingProp {
+    def: &'static PropDef,
+    value: Sym,
+    span: Span,
+    ease: Easing,
+}
+
+/// One `at` block. Resolved later, sorted by (time, source order).
+struct PendingBlock {
+    time: f64,
+    seq: usize,
+    props: Vec<PendingProp>,
+}
+
+struct NodeInfo {
     name: String,
     kind: ShapeKind,
+    parent: Option<usize>,
     base: HashMap<&'static str, Value>,
+    blocks: Vec<PendingBlock>,
+    /// Times already keyed per property (duplicate detection).
+    claimed: HashMap<&'static str, Vec<f64>>,
+    /// Resolved keyframes, filled by `resolve_blocks`.
     keys: HashMap<&'static str, Vec<Key>>,
 }
 
@@ -63,11 +157,13 @@ struct Sema {
     vars: HashMap<String, Var>,
     /// `let`s whose value failed to evaluate: uses are silenced to avoid cascades.
     bad_vars: HashSet<String>,
-    shapes: Vec<ShapeInfo>,
-    shape_ix: HashMap<String, usize>,
-    /// Shapes whose declaration failed: later `at` blocks on them are skipped silently.
+    /// Every shape and group, in declaration order (parents before children).
+    nodes: Vec<NodeInfo>,
+    node_ix: HashMap<String, usize>,
+    /// Nodes whose declaration failed: later `at` blocks on them are skipped silently.
     poisoned: HashSet<String>,
     duration: f64,
+    seq: usize,
 }
 
 fn fmt_num(v: f64) -> String {
@@ -147,7 +243,8 @@ impl Sema {
             match &item.kind {
                 ItemKind::Video(_) => {}
                 ItemKind::Let { name, value } => self.item_let(name, value),
-                ItemKind::Shape { kind, name, body } => self.item_shape(kind, name, body),
+                ItemKind::Shape { kind, name, body } => self.item_shape(kind, name, body, None),
+                ItemKind::Group { name, body } => self.item_group(name, body, None),
                 ItemKind::At { time, target, ease, body } => self.item_at(time, target, ease.as_ref(), body),
             }
         }
@@ -162,6 +259,8 @@ impl Sema {
             }
         }
 
+        // ---- resolve keyframes in time order, then lower ----------------------
+        self.resolve_blocks();
         self.lower(video)
     }
 
@@ -218,6 +317,16 @@ impl Sema {
         }
         match v {
             Some(value) => {
+                if schema::is_prop_name(&name.name) {
+                    self.diags.push(
+                        Diagnostic::warning(
+                            "W004",
+                            name.span,
+                            format!("variable '{}' is hidden by the property '{}' inside 'at' blocks", name.name, name.name),
+                        )
+                        .with_help("inside 'at' blocks that name means the property's previous value; rename the variable to use it there"),
+                    );
+                }
                 self.vars.insert(name.name.clone(), Var { value, span: name.span, used: false, builtin: false });
             }
             None => {
@@ -226,7 +335,22 @@ impl Sema {
         }
     }
 
-    fn item_shape(&mut self, kind: &Ident, name: &Ident, body: &Block) {
+    fn add_node(&mut self, name: &Ident, kind: ShapeKind, parent: Option<usize>) -> usize {
+        let ix = self.nodes.len();
+        self.nodes.push(NodeInfo {
+            name: name.name.clone(),
+            kind,
+            parent,
+            base: HashMap::new(),
+            blocks: Vec::new(),
+            claimed: HashMap::new(),
+            keys: HashMap::new(),
+        });
+        self.node_ix.insert(name.name.clone(), ix);
+        ix
+    }
+
+    fn item_shape(&mut self, kind: &Ident, name: &Ident, body: &Block, parent: Option<usize>) {
         let Some(sk) = schema::find_shape(&kind.name) else {
             let names: Vec<&str> = schema::SHAPES.iter().map(|s| s.0).collect();
             let help = match suggest(&kind.name, names.iter().copied()) {
@@ -239,33 +363,67 @@ impl Sema {
             self.poisoned.insert(name.name.clone());
             return;
         };
-        if self.shape_ix.contains_key(&name.name) {
-            self.diags.push(Diagnostic::error(
-                "S002",
-                name.span,
-                format!("a shape named '{}' already exists", name.name),
-            ));
+        if self.node_ix.contains_key(&name.name) {
+            self.diags.push(Diagnostic::error("S002", name.span, format!("a shape named '{}' already exists", name.name)));
             return;
         }
-        let mut info = ShapeInfo { name: name.name.clone(), kind: sk, base: HashMap::new(), keys: HashMap::new() };
+        let ix = self.add_node(name, sk, parent);
         let mut seen = HashSet::new();
         for p in &body.props {
             self.reject_ease(p);
             if let Some((def, v)) = self.check_assign(sk, p, &mut seen) {
-                info.base.insert(def.name, v);
+                self.nodes[ix].base.insert(def.name, v);
             }
         }
-        self.shape_ix.insert(name.name.clone(), self.shapes.len());
-        self.shapes.push(info);
+    }
+
+    fn item_group(&mut self, name: &Ident, body: &GroupBody, parent: Option<usize>) {
+        if self.node_ix.contains_key(&name.name) {
+            self.diags.push(Diagnostic::error("S002", name.span, format!("a shape named '{}' already exists", name.name)));
+            self.poison_children(&body.children);
+            return;
+        }
+        let ix = self.add_node(name, ShapeKind::Group, parent);
+        let mut seen = HashSet::new();
+        for p in &body.props {
+            self.reject_ease(p);
+            if let Some((def, v)) = self.check_assign(ShapeKind::Group, p, &mut seen) {
+                self.nodes[ix].base.insert(def.name, v);
+            }
+        }
+        for child in &body.children {
+            match &child.kind {
+                ItemKind::Shape { kind, name, body } => self.item_shape(kind, name, body, Some(ix)),
+                ItemKind::Group { name, body } => self.item_group(name, body, Some(ix)),
+                _ => {}
+            }
+        }
+    }
+
+    /// When a group is rejected its children never get declared; remember
+    /// their names so later `at` blocks on them do not pile on more errors.
+    fn poison_children(&mut self, items: &[Item]) {
+        for item in items {
+            match &item.kind {
+                ItemKind::Shape { name, .. } => {
+                    self.poisoned.insert(name.name.clone());
+                }
+                ItemKind::Group { name, body } => {
+                    self.poisoned.insert(name.name.clone());
+                    self.poison_children(&body.children);
+                }
+                _ => {}
+            }
+        }
     }
 
     fn item_at(&mut self, time: &Expr, target: &Ident, block_ease: Option<&Ident>, body: &Block) {
         let t = self.eval_as(time, Ty::Number);
         let default_ease = block_ease.and_then(|e| self.lookup_ease(e));
 
-        let found = self.shape_ix.get(&target.name).copied();
+        let found = self.node_ix.get(&target.name).copied();
         if found.is_none() && !self.poisoned.contains(&target.name) {
-            let names: Vec<&str> = self.shapes.iter().map(|s| s.name.as_str()).collect();
+            let names: Vec<&str> = self.nodes.iter().map(|s| s.name.as_str()).collect();
             let help = match suggest(&target.name, names.iter().copied()) {
                 Some(s) => format!("did you mean '{s}'?"),
                 None if names.is_empty() => "declare a shape first, e.g. rect box { ... }".to_string(),
@@ -293,40 +451,54 @@ impl Sema {
             ));
         }
 
-        let kind = self.shapes[ix].kind;
+        let kind = self.nodes[ix].kind;
+        self.seq += 1;
+        let seq = self.seq;
         let mut seen = HashSet::new();
+        let mut props = Vec::new();
         for p in &body.props {
             let ease = match &p.ease {
                 Some(e) => self.lookup_ease(e).unwrap_or(Easing::Linear),
                 None => default_ease.unwrap_or(Easing::Linear),
             };
-            let Some((def, v)) = self.check_assign(kind, p, &mut seen) else { continue };
-
-            let duplicate = self.shapes[ix]
-                .keys
+            let Some(def) = self.lookup_def(kind, p, &mut seen) else { continue };
+            // Inside `at`, property names are allowed: they mean "previous value".
+            let Some(sym) = self.eval_sym(&p.value, Some(kind)) else { continue };
+            if sym.ty() != def.ty {
+                self.diags.push(Diagnostic::error(
+                    "S005",
+                    p.value.span,
+                    format!("expected a {}, found a {}", def.ty, sym.ty()),
+                ));
+                continue;
+            }
+            let duplicate = self.nodes[ix]
+                .claimed
                 .get(def.name)
-                .map_or(false, |ks| ks.iter().any(|k| (k.time - t).abs() < EPS));
+                .map_or(false, |ts| ts.iter().any(|x| (x - t).abs() < EPS));
             if duplicate {
                 self.diags.push(Diagnostic::error(
                     "S006",
                     p.name.span,
-                    format!("'{}.{}' already has a keyframe at {}s", self.shapes[ix].name, def.name, fmt_num(t)),
+                    format!("'{}.{}' already has a keyframe at {}s", self.nodes[ix].name, def.name, fmt_num(t)),
                 ));
                 continue;
             }
-            self.shapes[ix].keys.entry(def.name).or_default().push(Key { time: t, value: v, ease });
+            self.nodes[ix].claimed.entry(def.name).or_default().push(t);
+            props.push(PendingProp { def, value: sym, span: p.value.span, ease });
         }
+        self.nodes[ix].blocks.push(PendingBlock { time: t, seq, props });
     }
 
     // ---- shared checks ----------------------------------------------------------
 
-    /// Check one `prop: value` assignment against a shape's schema.
-    fn check_assign(
+    /// Find a property in a node kind's schema, rejecting unknown and repeated ones.
+    fn lookup_def(
         &mut self,
         kind: ShapeKind,
         p: &PropAssign,
         seen: &mut HashSet<&'static str>,
-    ) -> Option<(&'static PropDef, Value)> {
+    ) -> Option<&'static PropDef> {
         let Some(def) = schema::find_prop(kind, &p.name.name) else {
             let names: Vec<&str> = schema::shape_props(kind).map(|d| d.name).collect();
             self.unknown_prop(&p.name, kind.name(), &names);
@@ -336,17 +508,32 @@ impl Sema {
             self.dup_prop(&p.name);
             return None;
         }
+        Some(def)
+    }
+
+    /// A constant `prop: value` in a declaration block.
+    fn check_assign(
+        &mut self,
+        kind: ShapeKind,
+        p: &PropAssign,
+        seen: &mut HashSet<&'static str>,
+    ) -> Option<(&'static PropDef, Value)> {
+        let def = self.lookup_def(kind, p, seen)?;
         let v = self.eval_as(&p.value, def.ty)?;
-        if let (Some((lo, hi)), Value::Number(n)) = (def.range, &v) {
+        self.range_warn(def, &v, p.value.span);
+        Some((def, v))
+    }
+
+    fn range_warn(&mut self, def: &PropDef, v: &Value, span: Span) {
+        if let (Some((lo, hi)), Value::Number(n)) = (def.range, v) {
             if *n < lo || *n > hi {
                 self.diags.push(Diagnostic::warning(
                     "W003",
-                    p.value.span,
+                    span,
                     format!("'{}' is {}, outside the expected range ({})", def.name, fmt_num(*n), range_text(lo, hi)),
                 ));
             }
         }
-        Some((def, v))
     }
 
     fn unknown_prop(&mut self, id: &Ident, owner: &str, names: &[&str]) {
@@ -389,83 +576,105 @@ impl Sema {
         None
     }
 
-    // ---- constant evaluation ------------------------------------------------------
+    // ---- expression evaluation ----------------------------------------------------
+
+    /// Evaluate an expression that must be a compile-time constant.
+    fn eval(&mut self, e: &Expr) -> Option<Value> {
+        match self.eval_sym(e, None)? {
+            Sym::Const(v) => Some(v),
+            _ => None, // unreachable: without a target nothing can be symbolic
+        }
+    }
 
     fn eval_as(&mut self, e: &Expr, ty: Ty) -> Option<Value> {
         let v = self.eval(e)?;
         if v.ty() != ty {
-            self.diags.push(Diagnostic::error(
-                "S005",
-                e.span,
-                format!("expected a {ty}, found a {}", v.ty()),
-            ));
+            self.diags.push(Diagnostic::error("S005", e.span, format!("expected a {ty}, found a {}", v.ty())));
             return None;
         }
         Some(v)
     }
 
-    /// Evaluate an expression to a value. Returns `None` after recording a
-    /// diagnostic when it cannot.
-    fn eval(&mut self, e: &Expr) -> Option<Value> {
+    /// Evaluate an expression. With `target = Some(kind)` (inside an `at`
+    /// block) the target's property names are in scope and make the result
+    /// symbolic; with `None` every name must be a constant.
+    ///
+    /// Returns `None` after recording a diagnostic when it cannot.
+    fn eval_sym(&mut self, e: &Expr, target: Option<ShapeKind>) -> Option<Sym> {
         match &e.kind {
-            ExprKind::Number(n) => Some(Value::Number(*n)),
-            ExprKind::Color(c) => Some(Value::Color(*c)),
-            ExprKind::Str(s) => Some(Value::Str(s.clone())),
+            ExprKind::Number(n) => Some(Sym::Const(Value::Number(*n))),
+            ExprKind::Color(c) => Some(Sym::Const(Value::Color(*c))),
+            ExprKind::Str(s) => Some(Sym::Const(Value::Str(s.clone()))),
             ExprKind::Ident(name) => {
+                // Property names win over variables inside `at` blocks.
+                if let Some(kind) = target {
+                    if let Some(def) = schema::find_prop(kind, name) {
+                        return Some(Sym::Prop(def.name, def.ty));
+                    }
+                }
                 if let Some(v) = self.vars.get_mut(name) {
                     v.used = true;
-                    return Some(v.value.clone());
+                    return Some(Sym::Const(v.value.clone()));
                 }
                 if self.bad_vars.contains(name) {
                     return None;
                 }
                 let mut d = Diagnostic::error("S007", e.span, format!("unknown identifier '{name}'"));
-                if let Some(s) = suggest(name, self.vars.keys().map(|k| k.as_str())) {
-                    d = d.with_help(format!("did you mean '{s}'?"));
+                if target.is_none() && schema::is_prop_name(name) {
+                    d = d.with_help(format!(
+                        "'{name}' is a property; property names can only be used inside 'at' blocks, where they mean the value before that keyframe"
+                    ));
+                } else {
+                    let mut candidates: Vec<&str> = self.vars.keys().map(|k| k.as_str()).collect();
+                    if let Some(kind) = target {
+                        candidates.extend(schema::shape_props(kind).map(|p| p.name));
+                    }
+                    if let Some(s) = suggest(name, candidates) {
+                        d = d.with_help(format!("did you mean '{s}'?"));
+                    }
                 }
                 self.diags.push(d);
                 None
             }
-            ExprKind::Unary { expr, .. } => match self.eval(expr)? {
-                Value::Number(n) => Some(Value::Number(-n)),
+            ExprKind::Unary { expr, .. } => match self.eval_sym(expr, target)? {
+                Sym::Const(Value::Number(n)) => Some(Sym::Const(Value::Number(-n))),
+                s if s.ty() == Ty::Number => Some(Sym::Neg(Box::new(s))),
                 other => {
                     self.diags.push(Diagnostic::error("S005", e.span, format!("cannot negate a {}", other.ty())));
                     None
                 }
             },
             ExprKind::Binary { op, lhs, rhs } => {
-                let l = self.eval(lhs);
-                let r = self.eval(rhs);
+                let l = self.eval_sym(lhs, target);
+                let r = self.eval_sym(rhs, target);
                 let (l, r) = (l?, r?);
-                match (&l, &r) {
-                    (Value::Number(a), Value::Number(b)) => {
-                        let out = match op {
-                            BinOp::Add => a + b,
-                            BinOp::Sub => a - b,
-                            BinOp::Mul => a * b,
-                            BinOp::Div => {
-                                if *b == 0.0 {
-                                    self.diags.push(Diagnostic::error("S008", rhs.span, "division by zero"));
-                                    return None;
-                                }
-                                a / b
-                            }
-                        };
-                        if !out.is_finite() {
-                            self.diags.push(Diagnostic::error("S017", e.span, "result is not a finite number"));
+                if l.ty() != Ty::Number || r.ty() != Ty::Number {
+                    self.diags.push(Diagnostic::error(
+                        "S005",
+                        e.span,
+                        format!("cannot apply '{}' to a {} and a {}", op.symbol(), l.ty(), r.ty()),
+                    ));
+                    return None;
+                }
+                if matches!(op, BinOp::Div) {
+                    if let Sym::Const(Value::Number(b)) = &r {
+                        if *b == 0.0 {
+                            self.diags.push(Diagnostic::error("S008", rhs.span, "division by zero"));
                             return None;
                         }
-                        Some(Value::Number(out))
-                    }
-                    _ => {
-                        self.diags.push(Diagnostic::error(
-                            "S005",
-                            e.span,
-                            format!("cannot apply '{}' to a {} and a {}", op.symbol(), l.ty(), r.ty()),
-                        ));
-                        None
                     }
                 }
+                // Both sides known: fold now. Otherwise keep it symbolic.
+                if let (Sym::Const(_), Sym::Const(_)) = (&l, &r) {
+                    return match Sym::Bin(*op, Box::new(l), Box::new(r)).resolve(&HashMap::new()) {
+                        Ok(v) => Some(Sym::Const(v)),
+                        Err((code, msg)) => {
+                            self.diags.push(Diagnostic::error(code, e.span, msg));
+                            None
+                        }
+                    };
+                }
+                Some(Sym::Bin(*op, Box::new(l), Box::new(r)))
             }
             ExprKind::Call { callee, args } => {
                 let Some(b) = builtins::find(&callee.name) else {
@@ -491,14 +700,69 @@ impl Sema {
                     );
                     return None;
                 }
-                let vals: Vec<Option<Value>> = args.iter().map(|a| self.eval(a)).collect();
-                let vals: Vec<Value> = vals.into_iter().collect::<Option<_>>()?;
-                match builtins::call(&callee.name, &vals) {
-                    Ok(v) => Some(v),
-                    Err(msg) => {
-                        self.diags.push(Diagnostic::error("S005", e.span, msg));
-                        None
+                let syms: Vec<Option<Sym>> = args.iter().map(|a| self.eval_sym(a, target)).collect();
+                let syms: Vec<Sym> = syms.into_iter().collect::<Option<_>>()?;
+                for (arg, s) in args.iter().zip(&syms) {
+                    if s.ty() != Ty::Number {
+                        self.diags.push(Diagnostic::error(
+                            "S005",
+                            arg.span,
+                            format!("'{}' expects numbers, found a {}", b.name, s.ty()),
+                        ));
+                        return None;
                     }
+                }
+                let sym = Sym::Call(b.name, syms, b.ret);
+                // All arguments known: fold now.
+                if let Sym::Call(_, args, _) = &sym {
+                    if args.iter().all(|a| matches!(a, Sym::Const(_))) {
+                        return match sym.resolve(&HashMap::new()) {
+                            Ok(v) => Some(Sym::Const(v)),
+                            Err((code, msg)) => {
+                                self.diags.push(Diagnostic::error(code, e.span, msg));
+                                None
+                            }
+                        };
+                    }
+                }
+                Some(sym)
+            }
+        }
+    }
+
+    // ---- keyframe resolution ----------------------------------------------------------
+
+    /// Turn every `at` block into concrete keys.
+    ///
+    /// For each node, blocks are processed in (time, source order). Each
+    /// block's expressions see the property values left by the blocks before
+    /// it (initially the declared values), and all of a block's assignments
+    /// are evaluated before any is applied, so `x: y; y: x;` swaps.
+    fn resolve_blocks(&mut self) {
+        for ix in 0..self.nodes.len() {
+            let kind = self.nodes[ix].kind;
+            let mut blocks = std::mem::take(&mut self.nodes[ix].blocks);
+            blocks.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap().then(a.seq.cmp(&b.seq)));
+
+            let mut current: HashMap<&'static str, Value> = self.nodes[ix].base.clone();
+            for def in schema::shape_props(kind) {
+                current.entry(def.name).or_insert_with(|| def.default.value());
+            }
+
+            for block in blocks {
+                let mut updates = Vec::new();
+                for p in &block.props {
+                    match p.value.resolve(&current) {
+                        Ok(v) => {
+                            self.range_warn(p.def, &v, p.span);
+                            updates.push((p.def.name, v, p.ease));
+                        }
+                        Err((code, msg)) => self.diags.push(Diagnostic::error(code, p.span, msg)),
+                    }
+                }
+                for (name, value, ease) in updates {
+                    current.insert(name, value.clone());
+                    self.nodes[ix].keys.entry(name).or_default().push(Key { time: block.time, value, ease });
                 }
             }
         }
@@ -506,26 +770,41 @@ impl Sema {
 
     // ---- lowering --------------------------------------------------------------------
 
-    /// Build the IR. Every shape gets one `Prop` per schema property; each
+    /// Build the IR tree. Every node gets one `Prop` per schema property; each
     /// prop's keys are sorted by time, with a synthetic t=0 key holding the
     /// declared (or default) value when the first user keyframe is later.
     fn lower(&self, video: ir::Video) -> ir::Program {
-        let mut shapes = Vec::new();
-        for info in &self.shapes {
-            let mut props = Vec::new();
-            for def in schema::shape_props(info.kind) {
-                let base = info.base.get(def.name).cloned().unwrap_or_else(|| def.default.value());
-                let mut keys = info.keys.get(def.name).cloned().unwrap_or_default();
-                keys.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
-                if let Some(first) = keys.first() {
-                    if first.time > EPS {
-                        keys.insert(0, Key { time: 0.0, value: base.clone(), ease: Easing::Linear });
-                    }
-                }
-                props.push(ir::Prop { name: def.name, base, keys });
+        let mut children_of: Vec<Vec<usize>> = vec![Vec::new(); self.nodes.len()];
+        let mut roots = Vec::new();
+        for (i, n) in self.nodes.iter().enumerate() {
+            match n.parent {
+                Some(p) => children_of[p].push(i),
+                None => roots.push(i),
             }
-            shapes.push(ir::Shape { name: info.name.clone(), kind: info.kind, props });
         }
+        let shapes = roots.iter().map(|&i| self.lower_node(i, &children_of)).collect();
         ir::Program { video, shapes }
+    }
+
+    fn lower_node(&self, i: usize, children_of: &[Vec<usize>]) -> ir::Shape {
+        let info = &self.nodes[i];
+        let mut props = Vec::new();
+        for def in schema::shape_props(info.kind) {
+            let base = info.base.get(def.name).cloned().unwrap_or_else(|| def.default.value());
+            let mut keys = info.keys.get(def.name).cloned().unwrap_or_default();
+            keys.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
+            if let Some(first) = keys.first() {
+                if first.time > EPS {
+                    keys.insert(0, Key { time: 0.0, value: base.clone(), ease: Easing::Linear });
+                }
+            }
+            props.push(ir::Prop { name: def.name, base, keys });
+        }
+        ir::Shape {
+            name: info.name.clone(),
+            kind: info.kind,
+            props,
+            children: children_of[i].iter().map(|&c| self.lower_node(c, children_of)).collect(),
+        }
     }
 }
