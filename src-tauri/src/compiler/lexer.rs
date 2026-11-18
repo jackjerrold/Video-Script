@@ -7,7 +7,7 @@
 use super::diagnostics::Diagnostic;
 use super::span::Span;
 use super::token::{Token, TokenKind};
-use super::value::Rgb;
+use super::value::Rgba;
 
 pub fn lex(src: &str) -> (Vec<Token>, Vec<Diagnostic>) {
     let mut lx = Lexer { src, chars: src.char_indices().collect(), i: 0, diags: Vec::new() };
@@ -178,13 +178,16 @@ impl<'a> Lexer<'a> {
         let end = self.pos();
         let parsed = if digits.chars().all(|c| c.is_ascii_hexdigit()) {
             match digits.len() {
-                3 => {
+                // #rgb and #rgba: each digit is doubled (f -> ff)
+                3 | 4 => {
                     let d: Vec<u8> = digits.chars().map(|c| c.to_digit(16).unwrap() as u8 * 17).collect();
-                    Some(Rgb(d[0], d[1], d[2]))
+                    Some(Rgba::new(d[0], d[1], d[2], d.get(3).copied().unwrap_or(255)))
                 }
-                6 => {
+                // #rrggbb and #rrggbbaa
+                6 | 8 => {
                     let p = |i: usize| u8::from_str_radix(&digits[i..i + 2], 16).unwrap();
-                    Some(Rgb(p(0), p(2), p(4)))
+                    let a = if digits.len() == 8 { p(6) } else { 255 };
+                    Some(Rgba::new(p(0), p(2), p(4), a))
                 }
                 _ => None,
             }
@@ -196,9 +199,9 @@ impl<'a> Lexer<'a> {
             None => {
                 self.diags.push(
                     Diagnostic::error("L005", Span::new(start, end), format!("invalid color '#{digits}'"))
-                        .with_help("colors are #rgb or #rrggbb, e.g. #f80 or #ff8800"),
+                        .with_help("colors are #rgb, #rgba, #rrggbb or #rrggbbaa, e.g. #f80 or #ff880080"),
                 );
-                Some(TokenKind::Color(Rgb(0, 0, 0)))
+                Some(TokenKind::Color(Rgba::rgb(0, 0, 0)))
             }
         }
     }

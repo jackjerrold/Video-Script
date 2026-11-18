@@ -11,12 +11,12 @@
 use super::geom::Affine;
 use super::ir::{Program, Prop, Shape};
 use super::schema::ShapeKind;
-use super::value::{Rgb, Value};
+use super::value::{Rgba, Value};
 
 pub struct Frame {
     pub width: u32,
     pub height: u32,
-    pub background: Rgb,
+    pub background: Rgba,
     /// In drawing order (parents' children in order, depth first).
     pub shapes: Vec<DrawShape>,
 }
@@ -39,11 +39,16 @@ impl DrawShape {
         }
     }
 
-    pub fn color(&self, name: &str) -> Rgb {
+    pub fn color(&self, name: &str) -> Rgba {
         match self.props.iter().find(|(n, _)| *n == name) {
             Some((_, Value::Color(c))) => *c,
-            _ => Rgb(255, 255, 255),
+            _ => Rgba::rgb(255, 255, 255),
         }
+    }
+
+    /// Any property's resolved value (used for paints, which may be a color or a gradient).
+    pub fn value(&self, name: &str) -> Option<&Value> {
+        self.props.iter().find(|(n, _)| *n == name).map(|(_, v)| v)
     }
 
     pub fn text(&self, name: &str) -> &str {

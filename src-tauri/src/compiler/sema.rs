@@ -27,7 +27,7 @@ use super::diagnostics::{has_errors, suggest, Diagnostic};
 use super::ir::{self, Easing, Key};
 use super::schema::{self, PropDef, ShapeKind};
 use super::span::Span;
-use super::value::{Rgb, Ty, Value};
+use super::value::{Rgba, Ty, Value};
 use std::collections::{HashMap, HashSet};
 
 const EPS: f64 = 1e-9;
@@ -193,7 +193,7 @@ fn video_from(vals: &HashMap<&'static str, Value>) -> ir::Video {
     };
     let background = match vals.get("background") {
         Some(Value::Color(c)) => *c,
-        _ => Rgb(0, 0, 0),
+        _ => Rgba::rgb(0, 0, 0),
     };
     ir::Video {
         width: n("width") as u32,
@@ -237,6 +237,12 @@ impl Sema {
                 Var { value: Value::Number(val), span: Span::new(0, 0), used: true, builtin: true },
             );
         }
+
+        // `none` is a fully transparent color: `fill: none;` removes the fill.
+        self.vars.insert(
+            "none".to_string(),
+            Var { value: Value::Color(Rgba::NONE), span: Span::new(0, 0), used: true, builtin: true },
+        );
 
         // ---- pass 2: everything else, in order ------------------------------
         for item in &ast.items {
@@ -464,13 +470,18 @@ impl Sema {
             let Some(def) = self.lookup_def(kind, p, &mut seen) else { continue };
             // Inside `at`, property names are allowed: they mean "previous value".
             let Some(sym) = self.eval_sym(&p.value, Some(kind)) else { continue };
-            if sym.ty() != def.ty {
+            if !def.ty.accepts(sym.ty()) {
                 self.diags.push(Diagnostic::error(
                     "S005",
                     p.value.span,
                     format!("expected a {}, found a {}", def.ty, sym.ty()),
                 ));
                 continue;
+            }
+            if let Sym::Const(v) = &sym {
+                if !self.check_choice(def, v, p.value.span) {
+                    continue;
+                }
             }
             let duplicate = self.nodes[ix]
                 .claimed
@@ -520,8 +531,31 @@ impl Sema {
     ) -> Option<(&'static PropDef, Value)> {
         let def = self.lookup_def(kind, p, seen)?;
         let v = self.eval_as(&p.value, def.ty)?;
+        if !self.check_choice(def, &v, p.value.span) {
+            return None;
+        }
         self.range_warn(def, &v, p.value.span);
         Some((def, v))
+    }
+
+    /// For string properties with a fixed set of values (like `align`).
+    fn check_choice(&mut self, def: &PropDef, v: &Value, span: Span) -> bool {
+        if let (Some(choices), Value::Str(s)) = (def.choices, v) {
+            if !choices.contains(&s.as_str()) {
+                let help = match suggest(s, choices.iter().copied()) {
+                    Some(x) => format!("did you mean \"{x}\"?"),
+                    None => format!(
+                        "expected one of: {}",
+                        choices.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(", ")
+                    ),
+                };
+                self.diags.push(
+                    Diagnostic::error("S020", span, format!("invalid value \"{s}\" for '{}'", def.name)).with_help(help),
+                );
+                return false;
+            }
+        }
+        true
     }
 
     fn range_warn(&mut self, def: &PropDef, v: &Value, span: Span) {
@@ -588,7 +622,7 @@ impl Sema {
 
     fn eval_as(&mut self, e: &Expr, ty: Ty) -> Option<Value> {
         let v = self.eval(e)?;
-        if v.ty() != ty {
+        if !ty.accepts(v.ty()) {
             self.diags.push(Diagnostic::error("S005", e.span, format!("expected a {ty}, found a {}", v.ty())));
             return None;
         }
@@ -689,12 +723,12 @@ impl Sema {
                     );
                     return None;
                 };
-                if args.len() != b.arity {
+                if !b.params.accepts_count(args.len()) {
                     self.diags.push(
                         Diagnostic::error(
                             "S019",
                             e.span,
-                            format!("'{}' takes {} argument(s), found {}", b.name, b.arity, args.len()),
+                            format!("'{}' takes {}, found {}", b.name, b.params.describe(), args.len()),
                         )
                         .with_help(b.doc),
                     );
@@ -702,13 +736,17 @@ impl Sema {
                 }
                 let syms: Vec<Option<Sym>> = args.iter().map(|a| self.eval_sym(a, target)).collect();
                 let syms: Vec<Sym> = syms.into_iter().collect::<Option<_>>()?;
-                for (arg, s) in args.iter().zip(&syms) {
-                    if s.ty() != Ty::Number {
-                        self.diags.push(Diagnostic::error(
-                            "S005",
-                            arg.span,
-                            format!("'{}' expects numbers, found a {}", b.name, s.ty()),
-                        ));
+                for (i, (arg, s)) in args.iter().zip(&syms).enumerate() {
+                    let want = b.params.expected(i).unwrap_or(Ty::Number);
+                    if !want.accepts(s.ty()) {
+                        self.diags.push(
+                            Diagnostic::error(
+                                "S005",
+                                arg.span,
+                                format!("argument {} of '{}' must be a {}, found a {}", i + 1, b.name, want, s.ty()),
+                            )
+                            .with_help(b.doc),
+                        );
                         return None;
                     }
                 }

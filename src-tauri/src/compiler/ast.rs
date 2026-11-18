@@ -6,7 +6,7 @@
 //! is what makes new shapes and properties cheap to add.
 
 use super::span::Span;
-use super::value::Rgb;
+use super::value::Rgba;
 
 #[derive(Debug, Clone)]
 pub struct Ident {
@@ -23,7 +23,7 @@ pub struct Expr {
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     Number(f64),
-    Color(Rgb),
+    Color(Rgba),
     Str(String),
     Ident(String),
     Unary { op: UnOp, expr: Box<Expr> },

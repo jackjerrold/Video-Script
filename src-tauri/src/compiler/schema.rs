@@ -6,7 +6,7 @@
 //! these tables, so most language extensions start (and often end) in this file.
 
 use super::ir::Easing;
-use super::value::{Rgb, Ty, Value};
+use super::value::{Rgba, Ty, Value};
 use serde::Serialize;
 
 // ---- shapes ------------------------------------------------------------
@@ -49,7 +49,7 @@ pub fn is_prop_name(name: &str) -> bool {
 #[derive(Clone, Copy, Debug)]
 pub enum PropDefault {
     Num(f64),
-    Color(Rgb),
+    Color(Rgba),
     Str(&'static str),
 }
 
@@ -71,22 +71,34 @@ pub struct PropDef {
     /// Inclusive (min, max) for numbers. Out of range is a warning on shapes
     /// and a hard error on `video` settings.
     pub range: Option<(f64, f64)>,
+    /// For strings: the only accepted values (an error otherwise).
+    pub choices: Option<&'static [&'static str]>,
 }
 
 const fn num(name: &'static str, default: f64) -> PropDef {
-    PropDef { name, ty: Ty::Number, default: PropDefault::Num(default), range: None }
+    PropDef { name, ty: Ty::Number, default: PropDefault::Num(default), range: None, choices: None }
 }
 
 const fn num_in(name: &'static str, default: f64, lo: f64, hi: f64) -> PropDef {
-    PropDef { name, ty: Ty::Number, default: PropDefault::Num(default), range: Some((lo, hi)) }
+    PropDef { name, ty: Ty::Number, default: PropDefault::Num(default), range: Some((lo, hi)), choices: None }
 }
 
-const fn color(name: &'static str, default: Rgb) -> PropDef {
-    PropDef { name, ty: Ty::Color, default: PropDefault::Color(default), range: None }
+const fn color(name: &'static str, default: Rgba) -> PropDef {
+    PropDef { name, ty: Ty::Color, default: PropDefault::Color(default), range: None, choices: None }
+}
+
+/// A color *or* gradient (for `fill` and `stroke`). The default must be a plain color.
+const fn paint(name: &'static str, default: Rgba) -> PropDef {
+    PropDef { name, ty: Ty::Paint, default: PropDefault::Color(default), range: None, choices: None }
 }
 
 const fn string(name: &'static str, default: &'static str) -> PropDef {
-    PropDef { name, ty: Ty::Str, default: PropDefault::Str(default), range: None }
+    PropDef { name, ty: Ty::Str, default: PropDefault::Str(default), range: None, choices: None }
+}
+
+/// A string that must be one of `choices`.
+const fn choice(name: &'static str, default: &'static str, choices: &'static [&'static str]) -> PropDef {
+    PropDef { name, ty: Ty::Str, default: PropDefault::Str(default), range: None, choices: Some(choices) }
 }
 
 /// Settings accepted inside `video { ... }`.
@@ -95,7 +107,7 @@ pub const VIDEO_PROPS: &[PropDef] = &[
     num_in("height", 360.0, 1.0, 4096.0),
     num_in("fps", 30.0, 1.0, 240.0),
     num_in("duration", 4.0, 0.001, 3600.0),
-    color("background", Rgb(20, 20, 28)),
+    color("background", Rgba::rgb(20, 20, 28)),
 ];
 
 /// Properties every node has, groups included. A group's transform applies
@@ -108,14 +120,30 @@ const TRANSFORM: &[PropDef] = &[
     num_in("opacity", 1.0, 0.0, 1.0),
 ];
 
-/// Properties of anything that is actually drawn.
-const PAINT: &[PropDef] = &[color("fill", Rgb(255, 255, 255))];
+/// Properties of anything that is actually drawn. `fill` and `stroke` take a
+/// color or a gradient; `none` (fully transparent) turns either off. The
+/// outline is only drawn when `stroke_width` is above 0 and is centered on
+/// the shape's edge.
+const PAINT: &[PropDef] = &[
+    paint("fill", Rgba::rgb(255, 255, 255)),
+    paint("stroke", Rgba::rgb(255, 255, 255)),
+    num_in("stroke_width", 0.0, 0.0, f64::INFINITY),
+];
 
 const RECT: &[PropDef] = &[num_in("w", 100.0, 0.0, f64::INFINITY), num_in("h", 100.0, 0.0, f64::INFINITY)];
 
 const CIRCLE: &[PropDef] = &[num_in("r", 50.0, 0.0, f64::INFINITY)];
 
-const TEXT: &[PropDef] = &[string("text", ""), num_in("size", 32.0, 0.0, f64::INFINITY)];
+pub const ALIGNS: &[&str] = &["left", "center", "right"];
+
+/// `max_width` 0 means "do not wrap". `line_height` multiplies the font's natural line spacing.
+const TEXT: &[PropDef] = &[
+    string("text", ""),
+    num_in("size", 32.0, 0.0, f64::INFINITY),
+    choice("align", "center", ALIGNS),
+    num_in("max_width", 0.0, 0.0, f64::INFINITY),
+    num_in("line_height", 1.0, 0.0, f64::INFINITY),
+];
 
 const NONE: &[PropDef] = &[];
 

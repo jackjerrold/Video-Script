@@ -9,7 +9,7 @@
 //! each prop owns a sorted timeline of [`Key`]s.
 
 use super::schema::ShapeKind;
-use super::value::{Rgb, Value};
+use super::value::{Rgba, Value};
 use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -60,7 +60,7 @@ pub struct Video {
     pub height: u32,
     pub fps: u32,
     pub duration: f64,
-    pub background: Rgb,
+    pub background: Rgba,
 }
 
 impl Program {

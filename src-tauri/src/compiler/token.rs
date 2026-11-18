@@ -1,7 +1,7 @@
 //! Tokens produced by the lexer.
 
 use super::span::Span;
-use super::value::Rgb;
+use super::value::Rgba;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TokenKind {
@@ -10,7 +10,7 @@ pub enum TokenKind {
     Number(f64),
     /// A number with a time suffix (`2s`, `500ms`), already converted to seconds.
     Time(f64),
-    Color(Rgb),
+    Color(Rgba),
     Str(String),
 
     // Keywords. Shape kinds like `rect` are NOT keywords: they are plain

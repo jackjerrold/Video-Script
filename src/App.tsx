@@ -26,40 +26,43 @@ const TABS: { id: Tab; label: string }[] = [
 ];
 
 const DEFAULT = `// Keyframe Studio: try editing me!
-video { width: 640; height: 360; fps: 30; duration: 5s; background: #0f1020; }
+video { width: 640; height: 360; fps: 30; duration: 5s; background: #0b0c1a; }
 
-let gold = #ffcc00;
-let sky  = #55aaff;
+// A full-screen gradient backdrop and a glowing sun that fades to transparent.
+rect sky   { x: width / 2; y: height / 2; w: width; h: height; fill: linear(90, #1b1f4b, #0b0c1a, #3a1c5e); }
+circle sun { x: 540; y: 80; r: 60; fill: radial(#fff6b0, #ffb347, #ff6a0000); }
 
-text title {
-  text: "Keyframes";
-  size: 52;
-  x: width / 2;
-  y: 60;
-  opacity: 0;
+// A card with a gradient outline.
+rect card {
+  x: 190; y: 200; w: 300; h: 200;
+  fill: #ffffff14;
+  stroke: linear(45, #7be0ff, #b46bff);
+  stroke_width: 3;
 }
 
-// A group: children are positioned relative to the group's own origin,
-// and animating the group moves, rotates and fades them all together.
-group robot {
-  x: 100;
-  y: 250;
-  rect body   { w: 70; h: 90; fill: sky; }
-  circle head { y: -70; r: 28; fill: gold; }
-  rect arm    { x: 50; y: -10; w: 40; h: 12; fill: #ff5555; }
+text heading {
+  text: "Gradients"; size: 40; x: 60; y: 130; align: "left";
+  fill: linear(0, #7be0ff, #b46bff);
 }
 
-// Relative keyframes: "x: x + 440" means "440 further than where it was".
-at 1s title ease out { opacity: 1; y: y + 20; }
-at 2.5s title { text: "Groups"; }
-at 4s title { text: "and Text"; }
+// Wrapped inside a 260px box; alignment decides where the position sits in it.
+text body {
+  text: "Stroke, gradients, alignment and word wrapping, all animatable.";
+  size: 18; x: 60; y: 215; align: "left"; max_width: 260; line_height: 1.3;
+  fill: #d8dcff;
+}
 
-at 4s robot ease in_out { x: x + 440; rot: 20; }
-at 5s robot ease in_out { x: x - 440; rot: 0; }
+text tag { text: "outlined"; size: 54; x: 470; y: 290; fill: none; stroke: #ffffff; stroke_width: 2; }
 
-// Children can still be animated on their own, inside the moving group.
-at 2s head ease out { y: y - 20; }
-at 3s head ease in  { y: y + 20; }
+// Relative keyframes ("stroke_width + 7" means 7 more than before).
+at 2s card ease in_out { stroke_width: stroke_width + 7; }
+
+// 'ease step' makes the position jump at the same moment the alignment changes.
+at 2.5s body ease step { align: "center"; x: x + 130; }
+at 4s body ease step { align: "right"; x: x + 130; }
+
+at 3s tag ease in_out { rot: -8; stroke: #ffcc00; fill: #ffcc0040; }
+at 4s sun ease in_out { y: y + 40; scale: 1.3; }
 `;
 
 export default function App() {
