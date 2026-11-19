@@ -17,6 +17,7 @@ pub enum TokenKind {
     // identifiers resolved in semantic analysis, so adding a shape never
     // touches the lexer or parser.
     Let,
+    AtSign,
     At,
     Video,
     Group,
@@ -49,6 +50,7 @@ impl TokenKind {
             TokenKind::Str(_) => "a string".into(),
             TokenKind::Let => "'let'".into(),
             TokenKind::At => "'at'".into(),
+            TokenKind::AtSign => "'@'".into(),
             TokenKind::Video => "'video'".into(),
             TokenKind::Group => "'group'".into(),
             TokenKind::LBrace => "'{'".into(),

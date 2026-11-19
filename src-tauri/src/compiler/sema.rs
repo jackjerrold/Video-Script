@@ -26,6 +26,7 @@ use super::builtins;
 use super::diagnostics::{has_errors, suggest, Diagnostic};
 use super::ir::{self, Easing, Key};
 use super::schema::{self, PropDef, ShapeKind};
+use super::params::{self, Overrides, Param};
 use super::span::Span;
 use super::value::{Rgba, Ty, Value};
 use std::collections::{HashMap, HashSet};
@@ -33,7 +34,14 @@ use std::collections::{HashMap, HashSet};
 const EPS: f64 = 1e-9;
 
 pub fn analyze(ast: &Program) -> (Option<ir::Program>, Vec<Diagnostic>) {
+    analyze_with(ast, &Overrides::new())
+}
+
+/// Like [`analyze`], with inspector values substituted for `@` parameters.
+pub fn analyze_with(ast: &Program, overrides: &Overrides) -> (Option<ir::Program>, Vec<Diagnostic>) {
     let mut s = Sema {
+        overrides: overrides.clone(),
+        params: Vec::new(),
         diags: Vec::new(),
         vars: HashMap::new(),
         bad_vars: HashSet::new(),
@@ -110,7 +118,7 @@ impl Sym {
             },
             Sym::Call(name, args, _) => {
                 let vals = args.iter().map(|a| a.resolve(env)).collect::<Result<Vec<_>, _>>()?;
-                builtins::call(name, &vals).map_err(|m| ("S005", m))
+                builtins::call(name, &vals).map_err(|m| (if m.contains("finite") { "S017" } else { "S005" }, m))
             }
         }
     }
@@ -153,6 +161,8 @@ struct NodeInfo {
 }
 
 struct Sema {
+    overrides: Overrides,
+    params: Vec<Param>,
     diags: Vec<Diagnostic>,
     vars: HashMap<String, Var>,
     /// `let`s whose value failed to evaluate: uses are silenced to avoid cascades.
@@ -238,6 +248,11 @@ impl Sema {
             );
         }
 
+        self.vars.insert(
+            "pi".to_string(),
+            Var { value: Value::Number(std::f64::consts::PI), span: Span::new(0, 0), used: true, builtin: true },
+        );
+
         // `none` is a fully transparent color: `fill: none;` removes the fill.
         self.vars.insert(
             "none".to_string(),
@@ -248,7 +263,7 @@ impl Sema {
         for item in &ast.items {
             match &item.kind {
                 ItemKind::Video(_) => {}
-                ItemKind::Let { name, value } => self.item_let(name, value),
+                ItemKind::Let { name, value, attr } => self.item_let(name, value, attr.as_ref()),
                 ItemKind::Shape { kind, name, body } => self.item_shape(kind, name, body, None),
                 ItemKind::Group { name, body } => self.item_group(name, body, None),
                 ItemKind::At { time, target, ease, body } => self.item_at(time, target, ease.as_ref(), body),
@@ -310,8 +325,8 @@ impl Sema {
         video_from(&vals)
     }
 
-    fn item_let(&mut self, name: &Ident, value: &Expr) {
-        let v = self.eval(value);
+    fn item_let(&mut self, name: &Ident, expr: &Expr, attr: Option<&Attr>) {
+        let v = self.eval(expr);
         if let Some(existing) = self.vars.get(&name.name) {
             let msg = if existing.builtin {
                 format!("'{}' is a built-in and cannot be redefined", name.name)
@@ -323,6 +338,10 @@ impl Sema {
         }
         match v {
             Some(value) => {
+                let value = match attr {
+                    Some(a) => self.apply_attr(a, name, expr, value),
+                    None => value,
+                };
                 if schema::is_prop_name(&name.name) {
                     self.diags.push(
                         Diagnostic::warning(
@@ -339,6 +358,88 @@ impl Sema {
                 self.bad_vars.insert(name.name.clone());
             }
         }
+    }
+
+    /// Validate an `@attribute` on a `let` and register the inspector
+    /// parameter. Returns the variable's value, with the inspector override
+    /// applied. On any problem it reports a diagnostic and returns `value` as is.
+    fn apply_attr(&mut self, attr: &Attr, name: &Ident, expr: &Expr, value: Value) -> Value {
+        let Some(&kind) = params::ATTRIBUTES.iter().find(|k| **k == attr.name.name) else {
+            let mut d = Diagnostic::error("S021", attr.name.span, format!("unknown attribute '@{}'", attr.name.name));
+            d = match suggest(&attr.name.name, params::ATTRIBUTES.iter().copied()) {
+                Some(s) => d.with_help(format!("did you mean '@{s}'?")),
+                None => d.with_help(format!("available: {}", params::ATTRIBUTES.iter().map(|a| format!("@{a}")).collect::<Vec<_>>().join(", "))),
+            };
+            self.diags.push(d);
+            return value;
+        };
+        let args: Vec<Value> = attr.args.iter().filter_map(|a| self.eval(a)).collect();
+        if args.len() != attr.args.len() {
+            return value; // the argument's own error was already reported
+        }
+        let (mut min, mut max, mut step, mut choices) = (None, None, None, Vec::new());
+        let problem: Option<String> = match kind {
+            "slider" => {
+                let nums: Vec<f64> = args.iter().filter_map(|a| if let Value::Number(n) = a { Some(*n) } else { None }).collect();
+                if nums.len() != args.len() || !(2..=3).contains(&nums.len()) {
+                    Some("@slider takes numbers: @slider(min, max) or @slider(min, max, step)".into())
+                } else if nums[0] >= nums[1] {
+                    Some("@slider needs min < max".into())
+                } else if nums.get(2).is_some_and(|s| *s <= 0.0) {
+                    Some("the @slider step must be positive".into())
+                } else if !matches!(value, Value::Number(_)) {
+                    Some("@slider needs a number variable".into())
+                } else {
+                    (min, max, step) = (Some(nums[0]), Some(nums[1]), nums.get(2).copied());
+                    None
+                }
+            }
+            "color" | "text" => {
+                let want = if kind == "color" { Ty::Color } else { Ty::Str };
+                if !args.is_empty() {
+                    Some(format!("@{kind} takes no arguments"))
+                } else if value.ty() != want {
+                    Some(format!("@{kind} needs a {} variable", if kind == "color" { "color" } else { "string" }))
+                } else {
+                    None
+                }
+            }
+            _ => {
+                let strs: Vec<String> = args.iter().filter_map(|a| if let Value::Str(s) = a { Some(s.clone()) } else { None }).collect();
+                if strs.len() != args.len() || strs.len() < 2 {
+                    Some("@choice takes at least two strings: @choice(\"a\", \"b\")".into())
+                } else if !matches!(&value, Value::Str(s) if strs.contains(s)) {
+                    Some("the @choice variable must be set to one of the listed strings".into())
+                } else {
+                    choices = strs;
+                    None
+                }
+            }
+        };
+        if let Some(msg) = problem {
+            self.diags.push(Diagnostic::error("S022", attr.span, msg));
+            return value;
+        }
+        let Some(default) = params::to_json(&value) else { return value };
+        let current = self
+            .overrides
+            .get(&name.name)
+            .and_then(|ov| params::from_override(kind, &choices, ov))
+            .unwrap_or(value);
+        let shown = params::to_json(&current).unwrap_or_else(|| default.clone());
+        self.params.push(Param {
+            name: name.name.clone(),
+            kind,
+            value: shown,
+            default,
+            min,
+            max,
+            step,
+            choices,
+            start: expr.span.start,
+            end: expr.span.end,
+        });
+        current
     }
 
     fn add_node(&mut self, name: &Ident, kind: ShapeKind, parent: Option<usize>) -> usize {
@@ -821,7 +922,7 @@ impl Sema {
             }
         }
         let shapes = roots.iter().map(|&i| self.lower_node(i, &children_of)).collect();
-        ir::Program { video, shapes }
+        ir::Program { video, shapes, params: self.params.clone() }
     }
 
     fn lower_node(&self, i: usize, children_of: &[Vec<usize>]) -> ir::Shape {

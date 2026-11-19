@@ -1,0 +1,24 @@
+// Inspector parameters: open the Inspector tab and drag the controls.
+// The script itself does not change until you press "Bake into script".
+video { width: 640; height: 360; fps: 30; duration: 4s; background: #0f1020; }
+
+@text   let headline = "Tweak me";
+@choice("sans", "bold", "serif", "mono", "display")  let face = "display";
+@slider(20, 140, 1)   let headline_size = 80;
+@color  let ink = #7be0ff;
+@color  let glow = #b46bff;
+@slider(0, 40)        let softness = 0;
+@slider(0, 300, 5)    let travel = 160;
+@slider(20, 120)      let orb_size = 50;
+
+circle orb { x: 80; y: 300; r: orb_size; fill: radial(glow, none); blur: softness; }
+
+text title {
+  text: headline; font: face; size: headline_size;
+  x: width / 2; y: 150;
+  fill: linear(0, ink, glow);
+}
+
+// The orb slides by 'travel' pixels (a relative keyframe using a parameter).
+at 2s orb ease in_out { x: x + travel; }
+at 4s orb ease in_out { x: x; }

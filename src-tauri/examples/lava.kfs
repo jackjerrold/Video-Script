@@ -1,0 +1,23 @@
+// Blur and gradients: soft glowing blobs, then a headline pulled into focus.
+video { width: 640; height: 360; fps: 30; duration: 6s; background: #0b0c1a; }
+
+rect sky { x: width / 2; y: height / 2; w: width; h: height; fill: linear(90, #1b1f4b, #0b0c1a); }
+
+circle a { x: 140; y: 240; r: 90; fill: hsl(330, 90, 60); blur: 26; opacity: 0.9; }
+circle b { x: 320; y: 120; r: 70; fill: hsl(200, 90, 60); blur: 22; opacity: 0.9; }
+circle c { x: 500; y: 250; r: 80; fill: hsl(45, 95, 60);  blur: 26; opacity: 0.9; }
+
+text title {
+  text: "FOCUS"; font: "display"; size: 120; x: width / 2; y: 180;
+  fill: #ffffff; blur: 24; opacity: 0.8;
+}
+
+at 3s a ease in_out { x: x + 300; y: y - 110; }
+at 6s a ease in_out { x: x - 300; y: y + 110; }
+at 3s b ease in_out { x: x - 160; y: y + 120; }
+at 6s b ease in_out { x: x + 160; y: y - 120; }
+at 3s c ease in_out { x: x - 280; y: y - 90; }
+at 6s c ease in_out { x: x + 280; y: y + 90; }
+
+// Blur animates like any other number.
+at 2.5s title ease out { blur: 0; opacity: 1; }

@@ -34,7 +34,9 @@ pub mod geom;
 pub mod ir;
 pub mod lexer;
 pub mod optimize;
+pub mod params;
 pub mod parser;
+pub mod reference;
 pub mod schema;
 pub mod sema;
 pub mod span;
@@ -54,6 +56,11 @@ pub struct Output {
 }
 
 pub fn compile(source: &Source) -> Output {
+    compile_with(source, &params::Overrides::new())
+}
+
+/// Compile with inspector values (`@slider` etc.) substituted for the literals.
+pub fn compile_with(source: &Source, overrides: &params::Overrides) -> Output {
     let (tokens, mut diags) = lexer::lex(&source.text);
     let (ast, parse_diags) = parser::parse(tokens);
     diags.extend(parse_diags);
@@ -61,7 +68,7 @@ pub fn compile(source: &Source) -> Output {
         return Output { program: None, diagnostics: diags };
     }
 
-    let (program, sema_diags) = sema::analyze(&ast);
+    let (program, sema_diags) = sema::analyze_with(&ast, overrides);
     diags.extend(sema_diags);
     let program = program.map(|mut p| {
         optimize::run(&mut p);
@@ -97,6 +104,7 @@ pub fn debug_stage(source: &Source, stage: &str) -> Result<String, String> {
             }
             Ok(out)
         }
+        "reference" => Ok(reference::text()),
         "ir" => {
             let o = compile(source);
             let mut out = match &o.program {

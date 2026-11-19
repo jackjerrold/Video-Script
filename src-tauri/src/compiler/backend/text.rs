@@ -6,18 +6,30 @@
 //! word wrapping at a maximum width, left/center/right alignment and a line
 //! height multiplier. There is no kerning yet.
 //!
-//! The font is bundled with `include_bytes!`. To use a different font, drop a
-//! `.ttf` into `src-tauri/assets/` and change the path below.
+//! Fonts are bundled with `include_bytes!` and selected by name with the
+//! `font` property. To add one: drop a `.ttf` into `src-tauri/assets/`, add a
+//! row to [`FONTS`], and add its name to `FONT_NAMES` in `schema.rs`.
 
 use std::sync::OnceLock;
 use tiny_skia::{Path, PathBuilder};
 use ttf_parser::{Face, OutlineBuilder};
 
-static FONT_DATA: &[u8] = include_bytes!("../../../assets/Poppins-Medium.ttf");
-static FACE: OnceLock<Option<Face<'static>>> = OnceLock::new();
+/// (name used in scripts, font file). The first row is the fallback.
+pub static FONTS: &[(&str, &[u8])] = &[
+    ("sans", include_bytes!("../../../assets/Poppins-Medium.ttf")),
+    ("bold", include_bytes!("../../../assets/Poppins-Bold.ttf")),
+    ("serif", include_bytes!("../../../assets/Lora-Variable.ttf")),
+    ("mono", include_bytes!("../../../assets/AnonymousPro-Regular.ttf")),
+    ("display", include_bytes!("../../../assets/Anton-Regular.ttf")),
+];
 
-fn face() -> Option<&'static Face<'static>> {
-    FACE.get_or_init(|| Face::parse(FONT_DATA, 0).ok()).as_ref()
+static FACES: OnceLock<Vec<Option<Face<'static>>>> = OnceLock::new();
+
+/// The parsed font called `name`; unknown names fall back to the first font.
+fn face(name: &str) -> Option<&'static Face<'static>> {
+    let faces = FACES.get_or_init(|| FONTS.iter().map(|(_, data)| Face::parse(data, 0).ok()).collect());
+    let ix = FONTS.iter().position(|(n, _)| *n == name).unwrap_or(0);
+    faces[ix].as_ref()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,6 +52,8 @@ impl Align {
 
 pub struct TextStyle<'a> {
     pub text: &'a str,
+    /// One of the names in [`FONTS`].
+    pub font: &'a str,
     /// Font size in pixels.
     pub size: f32,
     pub align: Align,
@@ -107,8 +121,8 @@ fn width_units(face: &Face, s: &str) -> f32 {
 }
 
 /// Width in pixels of `text` on a single line at `size`.
-pub fn text_width(text: &str, size: f32) -> f32 {
-    match face() {
+pub fn text_width(font: &str, text: &str, size: f32) -> f32 {
+    match face(font) {
         Some(f) => width_units(f, text) * size / f.units_per_em() as f32,
         None => 0.0,
     }
@@ -121,9 +135,9 @@ pub fn text_width(text: &str, size: f32) -> f32 {
 /// than `max_width` pixels; a single word that is too long is broken across
 /// lines by character. Wrapping collapses runs of spaces; without wrapping the
 /// text is left exactly as written.
-pub fn layout_lines(text: &str, size: f32, max_width: f32) -> Vec<String> {
+pub fn layout_lines(font: &str, text: &str, size: f32, max_width: f32) -> Vec<String> {
     let paragraphs: Vec<&str> = text.split('\n').collect();
-    let (Some(face), true) = (face(), max_width > 0.0 && size > 0.0) else {
+    let (Some(face), true) = (face(font), max_width > 0.0 && size > 0.0) else {
         return paragraphs.iter().map(|p| p.to_string()).collect();
     };
 
@@ -183,7 +197,7 @@ pub fn text_path(st: &TextStyle) -> Option<Path> {
     if st.size <= 0.0 || st.text.is_empty() {
         return None;
     }
-    let face = face()?;
+    let face = face(st.font)?;
     let scale = st.size / face.units_per_em() as f32;
     let ascent = face.ascender() as f32 * scale;
     let descent = face.descender() as f32 * scale;
@@ -191,7 +205,7 @@ pub fn text_path(st: &TextStyle) -> Option<Path> {
     let natural = ascent - descent + line_gap;
     let pitch = natural * if st.line_height > 0.0 { st.line_height } else { 1.0 };
 
-    let lines = layout_lines(st.text, st.size, st.max_width);
+    let lines = layout_lines(st.font, st.text, st.size, st.max_width);
     let widths: Vec<f32> = lines.iter().map(|l| width_units(face, l) * scale).collect();
     let box_w = if st.max_width > 0.0 { st.max_width } else { widths.iter().cloned().fold(0.0, f32::max) };
     let left = match st.align {

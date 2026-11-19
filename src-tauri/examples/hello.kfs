@@ -1,0 +1,32 @@
+// Hello: the smallest interesting video.
+video { width: 640; height: 360; fps: 30; duration: 4s; background: #0f1020; }
+
+rect backdrop {
+  x: width / 2; y: height / 2; w: width; h: height;
+  fill: linear(90, #1b1f4b, #0f1020);
+}
+
+text hello {
+  text: "Hello, world";
+  font: "display";
+  size: 72;
+  x: width / 2; y: 150;
+  fill: linear(0, #7be0ff, #b46bff);
+  opacity: 0;
+}
+
+text sub {
+  text: "made with a tiny keyframe language";
+  font: "serif";
+  size: 24;
+  x: width / 2; y: 240;
+  fill: #d8dcff;
+  opacity: 0;
+}
+
+// Relative keyframes: "y: y + 20" means "20 further than where it was".
+at 1s hello ease back { opacity: 1; y: y + 20; }
+
+// Hold the subtitle invisible until 1s, then fade it in.
+at 1s sub { opacity: 0; }
+at 2s sub ease out { opacity: 1; y: y - 10; }

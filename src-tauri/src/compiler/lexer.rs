@@ -88,6 +88,7 @@ impl<'a> Lexer<'a> {
                 '}' => self.single(TokenKind::RBrace),
                 '(' => self.single(TokenKind::LParen),
                 ')' => self.single(TokenKind::RParen),
+                '@' => self.single(TokenKind::AtSign),
                 ':' => self.single(TokenKind::Colon),
                 ';' => self.single(TokenKind::Semi),
                 ',' => self.single(TokenKind::Comma),

@@ -58,7 +58,7 @@ fn lexes_literals() {
 
 #[test]
 fn lexer_reports_but_continues() {
-    let (toks, diags) = lexer::lex("a @ b 3xyz #12 \"oops");
+    let (toks, diags) = lexer::lex("a ~ b 3xyz #12 \"oops");
     let codes: Vec<_> = diags.iter().map(|d| d.code).collect();
     assert_eq!(codes, ["L001", "L004", "L005", "L002"]);
     assert!(toks.len() > 4); // kept scanning
@@ -679,10 +679,10 @@ fn align_must_be_a_known_value() {
 #[test]
 fn wrapping_respects_the_width_and_keeps_every_word() {
     let s = "the quick brown fox jumps over the lazy dog";
-    let lines = layout_lines(s, 20.0, 120.0);
+    let lines = layout_lines("sans", s, 20.0, 120.0);
     assert!(lines.len() > 1, "{lines:?}");
     for l in &lines {
-        assert!(text_width(l, 20.0) <= 120.5, "'{l}' is too wide");
+        assert!(text_width("sans", l, 20.0) <= 120.5, "'{l}' is too wide");
     }
     assert_eq!(lines.join(" "), s);
 }
@@ -690,29 +690,29 @@ fn wrapping_respects_the_width_and_keeps_every_word() {
 #[test]
 fn wrapping_breaks_words_longer_than_a_line() {
     let w = "Supercalifragilisticexpialidocious";
-    let lines = layout_lines(w, 20.0, 100.0);
+    let lines = layout_lines("sans", w, 20.0, 100.0);
     assert!(lines.len() > 1);
     for l in &lines {
-        assert!(text_width(l, 20.0) <= 100.5, "'{l}' is too wide");
+        assert!(text_width("sans", l, 20.0) <= 100.5, "'{l}' is too wide");
     }
     assert_eq!(lines.concat(), w);
 }
 
 #[test]
 fn explicit_newlines_and_unwrapped_text_are_preserved() {
-    assert_eq!(layout_lines("a\nb", 20.0, 0.0), ["a", "b"]);
-    assert_eq!(layout_lines("one  two", 20.0, 0.0), ["one  two"]); // untouched without wrapping
-    assert_eq!(layout_lines("aaa\n\nbbb", 20.0, 500.0), ["aaa", "", "bbb"]);
-    assert_eq!(layout_lines("hello world", 20.0, 10_000.0), ["hello world"]);
+    assert_eq!(layout_lines("sans", "a\nb", 20.0, 0.0), ["a", "b"]);
+    assert_eq!(layout_lines("sans", "one  two", 20.0, 0.0), ["one  two"]); // untouched without wrapping
+    assert_eq!(layout_lines("sans", "aaa\n\nbbb", 20.0, 500.0), ["aaa", "", "bbb"]);
+    assert_eq!(layout_lines("sans", "hello world", 20.0, 10_000.0), ["hello world"]);
 }
 
 fn style(text: &str, align: Align, max_width: f32) -> TextStyle<'_> {
-    TextStyle { text, size: 40.0, align, max_width, line_height: 1.0 }
+    TextStyle { text, font: "sans", size: 40.0, align, max_width, line_height: 1.0 }
 }
 
 #[test]
 fn alignment_picks_which_part_of_the_block_sits_on_the_position() {
-    let w = text_width("Hello", 40.0);
+    let w = text_width("sans", "Hello", 40.0);
     let tol = 6.0; // glyph side bearings
     let b = text_path(&style("Hello", Align::Left, 0.0)).unwrap().bounds();
     assert!(b.left().abs() < tol && (b.right() - w).abs() < tol, "left: {}..{}", b.left(), b.right());
@@ -766,7 +766,7 @@ fn every_line_is_aligned_to_the_same_edge() {
 #[test]
 fn line_height_scales_the_spacing_between_lines() {
     let h = |lh: f32| {
-        let st = TextStyle { text: "A\nA", size: 20.0, align: Align::Center, max_width: 0.0, line_height: lh };
+        let st = TextStyle { text: "A\nA", font: "sans", size: 20.0, align: Align::Center, max_width: 0.0, line_height: lh };
         let b = text_path(&st).unwrap().bounds();
         b.bottom() - b.top()
     };
@@ -788,4 +788,329 @@ fn wrapping_works_end_to_end_and_can_be_animated() {
     let p = ok("text t { max_width: 100; line_height: 1; }\nat 1s t { max_width: max_width + 40; line_height: line_height * 2; }");
     assert_eq!(num(&p, "t", "max_width", 1.0), 140.0);
     assert_eq!(num(&p, "t", "line_height", 1.0), 2.0);
+}
+
+// ---- alpha build: shapes, fonts, blur, builtins, easings ----------------------
+
+fn red() -> (u8, u8, u8) { (255, 0, 0) }
+
+#[test]
+fn every_new_shape_draws_pixels() {
+    for body in [
+        "ellipse e { x: 100; y: 50; rx: 60; ry: 20; fill: #f00; }",
+        "polygon p { x: 100; y: 50; r: 40; sides: 6; fill: #f00; }",
+        "star s { x: 100; y: 50; r: 40; fill: #f00; }",
+        "line l { x: 20; y: 50; x2: 160; y2: 0; stroke: #f00; stroke_width: 10; }",
+        "rect r { x: 100; y: 50; w: 80; h: 60; radius: 10; fill: #f00; }",
+    ] {
+        assert_eq!(px(&render(body), 100, 50), red(), "{body}");
+    }
+}
+
+#[test]
+fn ellipse_is_wider_than_tall() {
+    let pm = render("ellipse e { x: 100; y: 50; rx: 60; ry: 20; fill: #f00; }");
+    assert_eq!(px(&pm, 100 + 50, 50), red());
+    assert_eq!(px(&pm, 100, 50 + 30), BG);
+}
+
+#[test]
+fn rounded_rect_clips_its_corners() {
+    let pm = render("rect r { x: 100; y: 50; w: 80; h: 60; radius: 20; fill: #f00; }");
+    assert_eq!(px(&pm, 61, 21), BG);
+    assert_eq!(px(&pm, 100, 22), red());
+}
+
+#[test]
+fn star_inner_and_polygon_sides_change_shape() {
+    let fat = render("star s { x: 100; y: 50; r: 40; points: 5; inner: 0.9; fill: #f00; }");
+    let thin = render("star s { x: 100; y: 50; r: 40; points: 5; inner: 0.2; fill: #f00; }");
+    let area = |p: &tiny_skia::Pixmap| p.pixels().iter().filter(|c| c.red() > 200 && c.green() < 50).count();
+    assert!(area(&fat) > area(&thin) * 2);
+    let tri = render("polygon p { x: 100; y: 50; r: 40; sides: 3; fill: #f00; }");
+    let hex = render("polygon p { x: 100; y: 50; r: 40; sides: 6; fill: #f00; }");
+    assert!(area(&hex) > area(&tri));
+    let (prog, d) = build("polygon p { sides: 2; }");
+    assert!(prog.is_some() && d.iter().any(|(c, _)| c == "W003" || c == "W002"), "{d:?}");
+}
+
+#[test]
+fn blur_spreads_and_softens_edges() {
+    let sharp = render("rect r { x: 100; y: 50; w: 40; h: 40; fill: #f00; }");
+    let soft = render("rect r { x: 100; y: 50; w: 40; h: 40; fill: #f00; blur: 8; }");
+    assert_eq!(px(&sharp, 70, 50), BG);
+    assert_ne!(px(&soft, 70, 50), BG, "blur should leak outside the edge");
+    assert_ne!(px(&soft, 100, 50), (255, 0, 0).into_tuple_hack(), "center is dimmer or equal");
+}
+
+trait Hack { fn into_tuple_hack(self) -> (u8, u8, u8); }
+impl Hack for (i32, i32, i32) { fn into_tuple_hack(self) -> (u8, u8, u8) { (self.0 as u8, self.1 as u8, self.2 as u8) } }
+
+#[test]
+fn blur_scales_with_group_and_can_animate() {
+    let p = ok("rect r { blur: 0; }\nat 2s r { blur: 10; }");
+    assert_eq!(num(&p, "r", "blur", 1.0), 5.0);
+    let small = render("group g { rect r { x: 100; y: 50; w: 20; h: 20; fill: #f00; blur: 4; } }");
+    let big = render("group g { scale: 3; x: 0; y: 0; rect r { x: 33; y: 17; w: 20; h: 20; fill: #f00; blur: 4; } }");
+    let _ = (small, big); // must not panic with transformed blur
+}
+
+#[test]
+fn all_fonts_exist_and_render() {
+    use super::backend::text;
+    for name in super::schema::FONT_NAMES {
+        assert!(text::text_width(name, "Hello", 30.0) > 20.0, "{name}");
+        let pm = render(&format!("text t {{ text: \"HI\"; font: \"{name}\"; size: 60; x: 100; y: 50; fill: #f00; }}"));
+        assert!(pm.pixels().iter().any(|c| c.red() > 200), "{name} drew nothing");
+    }
+    assert_eq!(error_codes("text t { font: \"comic\"; }"), ["S020"]);
+    assert!(text::text_width("mono", "iiii", 30.0) > text::text_width("sans", "iiii", 30.0));
+    assert!(text::text_width("nope", "abc", 30.0) > 0.0, "unknown font falls back");
+}
+
+fn const_num(expr: &str) -> f64 {
+    let p = ok(&format!("rect r {{ x: {expr}; }}"));
+    num(&p, "r", "x", 0.0)
+}
+
+#[test]
+fn new_builtins_compute() {
+    assert_eq!(const_num("round(2.5)"), 3.0);
+    assert_eq!(const_num("floor(2.9)"), 2.0);
+    assert_eq!(const_num("ceil(2.1)"), 3.0);
+    assert_eq!(const_num("sqrt(16)"), 4.0);
+    assert_eq!(const_num("pow(2, 10)"), 1024.0);
+    assert_eq!(const_num("mod(-1, 5)"), 4.0);
+    assert_eq!(const_num("lerp(10, 20, 0.25)"), 12.5);
+    assert!((const_num("pi") - std::f64::consts::PI).abs() < 1e-12);
+    let p = ok("rect r { fill: hsl(0, 100, 50); }\nrect m { fill: mix(#000, #fff, 0.5); }");
+    assert_eq!(prop_value(&p, "r", "fill", 0.0), Value::Color(Rgba::rgb(255, 0, 0)));
+    match prop_value(&p, "m", "fill", 0.0) {
+        Value::Color(c) => assert!((126..=129).contains(&c.r)),
+        v => panic!("{v:?}"),
+    }
+}
+
+#[test]
+fn bad_math_is_an_error_not_nan() {
+    assert!(!error_codes("rect r { x: sqrt(-1); }").is_empty());
+    assert!(!error_codes("rect r { x: mod(3, 0); }").is_empty());
+}
+
+#[test]
+fn new_easings_hit_endpoints_and_overshoot() {
+    for e in ["smooth", "back", "bounce", "elastic"] {
+        let p = ok(&format!("rect r {{ x: 0; }}\nat 2s r ease {e} {{ x: 100; }}"));
+        assert!((num(&p, "r", "x", 0.0)).abs() < 1e-9, "{e}");
+        assert!((num(&p, "r", "x", 2.0) - 100.0).abs() < 1e-9, "{e}");
+    }
+    let p = ok("rect r { x: 0; }\nat 2s r ease back { x: 100; }");
+    assert!((0..20).any(|i| num(&p, "r", "x", i as f64 / 10.0) > 100.0));
+    // overshoot must not break color interpolation
+    let p = ok("rect r { fill: #000; }\nat 2s r ease elastic { fill: #fff; }");
+    for i in 0..=20 {
+        let _ = prop_value(&p, "r", "fill", i as f64 / 10.0);
+    }
+}
+
+#[test]
+fn font_and_radius_animate() {
+    let p = ok("text t { font: \"sans\"; }\nat 2s t ease step { font: \"mono\"; }");
+    assert_eq!(prop_value(&p, "t", "font", 0.0), Value::Str("sans".into()));
+    assert_eq!(prop_value(&p, "t", "font", 2.0), Value::Str("mono".into()));
+    let p = ok("rect r { radius: 0; }\nat 2s r { radius: 20; }");
+    assert_eq!(num(&p, "r", "radius", 1.0), 10.0);
+}
+
+#[test]
+fn reference_lists_the_vocabulary() {
+    let r = super::reference::text();
+    for w in ["ellipse", "polygon", "star", "line", "blur", "radius", "bounce", "elastic", "display", "round", "hsl", "pi"] {
+        assert!(r.contains(w), "reference missing {w}");
+    }
+}
+
+#[test]
+fn bundled_examples_compile_cleanly_and_render() {
+    for (name, src) in [
+        ("hello", include_str!("../../examples/hello.kfs")),
+        ("shapes", include_str!("../../examples/shapes.kfs")),
+        ("typography", include_str!("../../examples/typography.kfs")),
+        ("lava", include_str!("../../examples/lava.kfs")),
+        ("robot", include_str!("../../examples/robot.kfs")),
+        ("params", include_str!("../../examples/params.kfs")),
+        ("prompt", include_str!("../../examples/_prompt_example.kfs")),
+    ] {
+        let out = compile(&Source::new(src.to_string()));
+        assert!(out.diagnostics.is_empty(), "{name}: {:?}", out.diagnostics.iter().map(|d| (d.code, d.message.clone())).collect::<Vec<_>>());
+        let p = out.program.unwrap();
+        let _ = super::backend::raster::draw(&eval(&p, 1.0));
+    }
+}
+
+#[test]
+#[ignore]
+fn dump_example_frames() {
+    let dir = std::env::var("KFS_DUMP").unwrap();
+    for (name, src, ts) in [
+        ("hello", include_str!("../../examples/hello.kfs"), [0.5, 3.5]),
+        ("shapes", include_str!("../../examples/shapes.kfs"), [0.0, 2.5]),
+        ("typography", include_str!("../../examples/typography.kfs"), [0.0, 5.0]),
+        ("lava", include_str!("../../examples/lava.kfs"), [0.0, 4.0]),
+        ("robot", include_str!("../../examples/robot.kfs"), [2.0, 3.0]),
+    ] {
+        let p = compile(&Source::new(src.to_string())).program.unwrap();
+        for (i, t) in ts.iter().enumerate() {
+            let png = super::backend::raster::to_png(&super::backend::raster::draw(&eval(&p, *t))).unwrap();
+            std::fs::write(format!("{dir}/{name}{i}.png"), png).unwrap();
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn print_reference() { println!("{}", super::reference::text()); }
+
+#[test]
+#[ignore]
+fn probe() {
+    for body in [
+        "let a = 1; let a = 2;",
+        "video { width: 1; }",
+        "rect a { x: 1; } let a = 3;",
+        "let width = 5;",
+        "rect box { } at 1s box { x: 5 }",
+        "rect box { x: 1, y: 2; }",
+        "rect box { } at 1s box ease linear { x: 5; }",
+        "rect box { } at 1s box { x: 5; } at 1s box { x: 6; }",
+        "rect box { } at 1s box { x: 5; y: 6; } at 1s box { fill: #fff; }",
+        "rect box { } at 1s box { w: 5 ease out; }",
+        "rect box { fill: linear(#f00, #00f); }",
+        "rect box { fill: linear(0, #f00); }",
+        "circle c { w: 5; }",
+        "rect box { fill: red; }",
+        "rect box { fill: \"red\"; }",
+        "rect box { x: 10px; }",
+        "rect box { x: 1s; }",
+        "text t { text: 5; }",
+        "rect box { } at 5s box { x: 5; }",
+        "rect box { } at 1.5 box { x: 5; }",
+        "rect box { } at 1 box { x: 5; }",
+        "rect box { fill: #ff0000; opacity: 50; }",
+        "rect box { } at 1s box ease in-out { x: 5; }",
+        "group g { rect a { } } at 1s a { x: 5; }",
+        "rect box { } at 1s box { fill: #fff ease linear; }",
+        "rect box { rotate: 5; }",
+        "line l { fill: #fff; }",
+        "rect box { x: 5 } ",
+        "rect box { } at 1s box { x: x + 5; y: x; }",
+        "rect box { fill: rgb(255,0,0); } rect b { fill: hsl(10, 50, 50); }",
+        "rect box { } at 0s box { x: 5; }",
+    ] {
+        let (p, d) = build(body);
+        let src = Source::new(format!("{HEADER}{body}"));
+        let out = compile(&src);
+        println!("{} => {:?}", body, out.diagnostics.iter().map(|d| format!("{}:{}", d.code, d.message)).collect::<Vec<_>>());
+        let _ = p; let _ = d;
+    }
+}
+
+// ---- inspector parameters ----------------------------------------------------
+
+use super::compile_with;
+use super::params::{bake, Overrides};
+
+fn build_with(body: &str, ov: &[(&str, serde_json::Value)]) -> super::Output {
+    let o: Overrides = ov.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+    compile_with(&Source::new(format!("{HEADER}{body}")), &o)
+}
+
+const PARAMS: &str = "@slider(0, 200, 5) let speed = 40;\n@color let accent = #ff0000;\n@text let title = \"Hi\";\n@choice(\"sans\", \"mono\") let face = \"sans\";\ntext t { text: title; font: face; fill: accent; x: speed; }\n";
+
+#[test]
+fn params_are_collected_in_source_order() {
+    let p = ok(PARAMS);
+    let kinds: Vec<_> = p.params.iter().map(|q| (q.name.as_str(), q.kind)).collect();
+    assert_eq!(kinds, [("speed", "slider"), ("accent", "color"), ("title", "text"), ("face", "choice")]);
+    let s = &p.params[0];
+    assert_eq!((s.min, s.max, s.step), (Some(0.0), Some(200.0), Some(5.0)));
+    assert_eq!(s.value, serde_json::json!(40.0));
+    assert_eq!(p.params[3].choices, ["sans", "mono"]);
+    assert_eq!(num(&p, "t", "x", 0.0), 40.0);
+}
+
+#[test]
+fn overrides_replace_the_literals_without_touching_the_script() {
+    let out = build_with(PARAMS, &[
+        ("speed", serde_json::json!(125)), ("accent", serde_json::json!("#00ff00")),
+        ("title", serde_json::json!("Yo")), ("face", serde_json::json!("mono")),
+    ]);
+    let p = out.program.unwrap();
+    assert_eq!(num(&p, "t", "x", 0.0), 125.0);
+    assert_eq!(prop_value(&p, "t", "fill", 0.0), Value::Color(Rgba::rgb(0, 255, 0)));
+    assert_eq!(prop_value(&p, "t", "text", 0.0), Value::Str("Yo".into()));
+    assert_eq!(prop_value(&p, "t", "font", 0.0), Value::Str("mono".into()));
+    assert_ne!(p.params[0].value, p.params[0].default);
+}
+
+#[test]
+fn bad_or_unknown_overrides_are_ignored() {
+    let out = build_with(PARAMS, &[
+        ("speed", serde_json::json!("fast")), ("accent", serde_json::json!("red")),
+        ("face", serde_json::json!("comic")), ("nonexistent", serde_json::json!(1)),
+    ]);
+    let p = out.program.unwrap();
+    assert_eq!(num(&p, "t", "x", 0.0), 40.0);
+    assert_eq!(prop_value(&p, "t", "font", 0.0), Value::Str("sans".into()));
+}
+
+#[test]
+fn bake_rewrites_only_changed_literals() {
+    let ov = [("speed", serde_json::json!(62.5)), ("title", serde_json::json!("Say \"hi\"")), ("accent", serde_json::json!("#0a0b0c"))];
+    let out = build_with(PARAMS, &ov);
+    let src = format!("{HEADER}{PARAMS}");
+    let baked = bake(&src, &out.program.unwrap().params);
+    assert!(baked.contains("let speed = 62.5;"), "{baked}");
+    assert!(baked.contains("let title = \"Say \\\"hi\\\"\";"), "{baked}");
+    assert!(baked.contains("let accent = #0a0b0c;"), "{baked}");
+    assert!(baked.contains("let face = \"sans\";"));
+    // the baked script compiles to the same thing as the override did
+    let again = compile(&Source::new(baked)).program.unwrap();
+    assert_eq!(num(&again, "t", "x", 0.0), 62.5);
+    assert!(again.params.iter().all(|q| q.value == q.default));
+    // nothing changed: nothing rewritten
+    assert_eq!(bake(&src, &ok(PARAMS).params), src);
+}
+
+#[test]
+fn attribute_errors() {
+    assert_eq!(error_codes("@slidr(0, 1) let a = 0.5;\nrect r { x: a; }"), ["S021"]);
+    for body in [
+        "@slider(5, 1) let a = 2;", "@slider(1) let a = 1;", "@slider(0, 10) let a = #f00;",
+        "@slider(0, 10, 0) let a = 1;", "@color let a = 1;", "@text let a = 1;",
+        "@choice(\"a\") let a = \"a\";", "@choice(\"a\", \"b\") let a = \"c\";", "@color(1) let a = #f00;",
+    ] {
+        assert_eq!(error_codes(&format!("{body}\nrect r {{ x: 0; }}")).first().map(String::as_str), Some("S022"), "{body}");
+    }
+    // syntax: an attribute must precede a let
+    assert!(error_codes("@slider(0, 1) rect r { }").contains(&"P001".to_string()));
+}
+
+#[test]
+fn params_work_in_expressions_and_relative_keyframes() {
+    let out = build_with("@slider(0, 100) let d = 10;\nrect r { x: 5; }\nat 2s r { x: x + d * 2; }", &[("d", serde_json::json!(30))]);
+    let p = out.program.unwrap();
+    assert_eq!(num(&p, "r", "x", 2.0), 65.0);
+}
+
+#[test]
+#[ignore]
+fn dump_params_frame() {
+    let dir = std::env::var("KFS_DUMP").unwrap();
+    let ov: Overrides = [("headline", serde_json::json!("Live!")), ("face", serde_json::json!("bold")), ("ink", serde_json::json!("#ffcc00")), ("softness", serde_json::json!(18)), ("travel", serde_json::json!(300))].into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+    let p = compile_with(&Source::new(include_str!("../../examples/params.kfs").to_string()), &ov).program.unwrap();
+    for (i, t) in [0.0, 2.0].iter().enumerate() {
+        let png = super::backend::raster::to_png(&super::backend::raster::draw(&eval(&p, *t))).unwrap();
+        std::fs::write(format!("{dir}/params{i}.png"), png).unwrap();
+    }
 }

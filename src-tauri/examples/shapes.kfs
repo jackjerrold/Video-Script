@@ -1,0 +1,33 @@
+// Every shape, each with a different easing.
+video { width: 640; height: 360; fps: 30; duration: 5s; background: #0f1020; }
+
+let y0 = 140;
+
+line floor { x: 30; y: 215; x2: 580; y2: 0; stroke: #ffffff30; stroke_width: 2; }
+
+rect box     { x: 70;  y: y0; w: 70; h: 70; radius: 16; fill: hsl(200, 90, 60); }
+circle ball  { x: 170; y: y0; r: 34; fill: hsl(160, 80, 50); }
+ellipse egg  { x: 270; y: y0; rx: 40; ry: 24; fill: hsl(45, 95, 60); }
+star spark   { x: 370; y: y0; r: 42; points: 5; inner: 0.45; fill: hsl(330, 85, 65); }
+polygon gem  { x: 470; y: y0; r: 38; sides: 6; fill: hsl(270, 70, 65); }
+line stick   { x: 545; y: 100; x2: 50; y2: 60; stroke: hsl(0, 80, 65); stroke_width: 8; }
+
+text l1 { text: "rect";    font: "mono"; size: 15; x: 70;  y: 270; fill: #d8dcff; }
+text l2 { text: "circle";  font: "mono"; size: 15; x: 170; y: 270; fill: #d8dcff; }
+text l3 { text: "ellipse"; font: "mono"; size: 15; x: 270; y: 270; fill: #d8dcff; }
+text l4 { text: "star";    font: "mono"; size: 15; x: 370; y: 270; fill: #d8dcff; }
+text l5 { text: "polygon"; font: "mono"; size: 15; x: 470; y: 270; fill: #d8dcff; }
+text l6 { text: "line";    font: "mono"; size: 15; x: 570; y: 270; fill: #d8dcff; }
+
+at 2.5s box   ease back    { rot: 90; }
+at 5s   box   ease in_out  { rot: 0; }
+at 2.5s ball  ease bounce  { y: y + 50; }
+at 5s   ball  ease out     { y: y0; }
+at 2.5s egg   ease in_out  { rot: 180; }
+at 5s   egg   ease in_out  { rot: 360; }
+at 2.5s spark ease elastic { rot: 144; scale: 1.25; }
+at 5s   spark ease in_out  { rot: 0; scale: 1; }
+at 2.5s gem   ease in_out  { sides: 3; }
+at 5s   gem   ease in_out  { sides: 6; }
+at 2.5s stick ease elastic { x2: 0; y2: 100; }
+at 5s   stick ease in_out  { x2: 50; y2: 60; }

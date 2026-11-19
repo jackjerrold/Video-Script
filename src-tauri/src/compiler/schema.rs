@@ -16,6 +16,12 @@ use serde::Serialize;
 pub enum ShapeKind {
     Rect,
     Circle,
+    Ellipse,
+    /// A straight segment from its own origin to an offset (`x2`, `y2`).
+    Line,
+    /// A regular polygon (triangle, hexagon, ...).
+    Polygon,
+    Star,
     Text,
     /// A container: has a transform but draws nothing itself.
     Group,
@@ -31,6 +37,10 @@ impl ShapeKind {
 pub const SHAPES: &[(&str, ShapeKind)] = &[
     ("rect", ShapeKind::Rect),
     ("circle", ShapeKind::Circle),
+    ("ellipse", ShapeKind::Ellipse),
+    ("line", ShapeKind::Line),
+    ("polygon", ShapeKind::Polygon),
+    ("star", ShapeKind::Star),
     ("text", ShapeKind::Text),
     ("group", ShapeKind::Group),
 ];
@@ -130,15 +140,46 @@ const PAINT: &[PropDef] = &[
     num_in("stroke_width", 0.0, 0.0, f64::INFINITY),
 ];
 
-const RECT: &[PropDef] = &[num_in("w", 100.0, 0.0, f64::INFINITY), num_in("h", 100.0, 0.0, f64::INFINITY)];
+/// Effects every drawn shape has. `blur` is a gaussian blur radius in pixels
+/// (it scales with the shape's transform).
+const EFFECTS: &[PropDef] = &[num_in("blur", 0.0, 0.0, f64::INFINITY)];
+
+/// Lines are all stroke: no fill, and a visible default width.
+const PAINT_LINE: &[PropDef] =
+    &[paint("stroke", Rgba::rgb(255, 255, 255)), num_in("stroke_width", 4.0, 0.0, f64::INFINITY)];
+
+const RECT: &[PropDef] = &[
+    num_in("w", 100.0, 0.0, f64::INFINITY),
+    num_in("h", 100.0, 0.0, f64::INFINITY),
+    num_in("radius", 0.0, 0.0, f64::INFINITY),
+];
 
 const CIRCLE: &[PropDef] = &[num_in("r", 50.0, 0.0, f64::INFINITY)];
+
+const ELLIPSE: &[PropDef] = &[num_in("rx", 60.0, 0.0, f64::INFINITY), num_in("ry", 40.0, 0.0, f64::INFINITY)];
+
+const LINE: &[PropDef] = &[num("x2", 100.0), num("y2", 0.0)];
+
+/// `sides` is rounded to a whole number when drawn.
+const POLYGON: &[PropDef] = &[num_in("r", 50.0, 0.0, f64::INFINITY), num_in("sides", 6.0, 3.0, 64.0)];
+
+/// `inner` is the inner radius as a fraction of `r` (0 to 1).
+const STAR: &[PropDef] = &[
+    num_in("r", 50.0, 0.0, f64::INFINITY),
+    num_in("points", 5.0, 2.0, 64.0),
+    num_in("inner", 0.5, 0.0, 1.0),
+];
+
+/// Bundled fonts. The data lives in `backend/text.rs`; a test checks that
+/// every name here has one. Add a name here and a row there.
+pub const FONT_NAMES: &[&str] = &["sans", "bold", "serif", "mono", "display"];
 
 pub const ALIGNS: &[&str] = &["left", "center", "right"];
 
 /// `max_width` 0 means "do not wrap". `line_height` multiplies the font's natural line spacing.
 const TEXT: &[PropDef] = &[
     string("text", ""),
+    choice("font", "sans", FONT_NAMES),
     num_in("size", 32.0, 0.0, f64::INFINITY),
     choice("align", "center", ALIGNS),
     num_in("max_width", 0.0, 0.0, f64::INFINITY),
@@ -147,15 +188,19 @@ const TEXT: &[PropDef] = &[
 
 const NONE: &[PropDef] = &[];
 
-/// All properties of a node kind: transform, then paint, then the kind's own.
+/// All properties of a node kind: transform, then paint, then the kind's own, then effects.
 pub fn shape_props(kind: ShapeKind) -> impl Iterator<Item = &'static PropDef> {
-    let (paint, extra): (&'static [PropDef], &'static [PropDef]) = match kind {
-        ShapeKind::Rect => (PAINT, RECT),
-        ShapeKind::Circle => (PAINT, CIRCLE),
-        ShapeKind::Text => (PAINT, TEXT),
-        ShapeKind::Group => (NONE, NONE),
+    let (paint, extra, fx): (&'static [PropDef], &'static [PropDef], &'static [PropDef]) = match kind {
+        ShapeKind::Rect => (PAINT, RECT, EFFECTS),
+        ShapeKind::Circle => (PAINT, CIRCLE, EFFECTS),
+        ShapeKind::Ellipse => (PAINT, ELLIPSE, EFFECTS),
+        ShapeKind::Line => (PAINT_LINE, LINE, EFFECTS),
+        ShapeKind::Polygon => (PAINT, POLYGON, EFFECTS),
+        ShapeKind::Star => (PAINT, STAR, EFFECTS),
+        ShapeKind::Text => (PAINT, TEXT, EFFECTS),
+        ShapeKind::Group => (NONE, NONE, NONE),
     };
-    TRANSFORM.iter().chain(paint.iter()).chain(extra.iter())
+    TRANSFORM.iter().chain(paint.iter()).chain(extra.iter()).chain(fx.iter())
 }
 
 pub fn find_prop(kind: ShapeKind, name: &str) -> Option<&'static PropDef> {
@@ -169,6 +214,10 @@ pub const EASINGS: &[(&str, Easing)] = &[
     ("in", Easing::In),
     ("out", Easing::Out),
     ("in_out", Easing::InOut),
+    ("smooth", Easing::Smooth),
+    ("back", Easing::Back),
+    ("bounce", Easing::Bounce),
+    ("elastic", Easing::Elastic),
     ("step", Easing::Step),
 ];
 

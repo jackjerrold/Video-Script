@@ -79,6 +79,14 @@ pub struct Block {
     pub span: Span,
 }
 
+/// `@slider(0, 100)` before a `let`: shows the variable in the inspector.
+#[derive(Debug, Clone)]
+pub struct Attr {
+    pub name: Ident,
+    pub args: Vec<Expr>,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone)]
 pub struct Item {
     pub kind: ItemKind,
@@ -90,7 +98,7 @@ pub enum ItemKind {
     /// `video { ... }`
     Video(Block),
     /// `let name = expr;`
-    Let { name: Ident, value: Expr },
+    Let { name: Ident, value: Expr, attr: Option<Attr> },
     /// `rect box { ... }`: the kind is an identifier, resolved later.
     Shape { kind: Ident, name: Ident, body: Block },
     /// `group name { props; children }`: children are shape or group items.

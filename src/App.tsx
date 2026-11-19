@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { EXAMPLES } from "./examples";
 import "./App.css";
 
 type Diag = {
@@ -15,64 +16,100 @@ type Diag = {
   rendered: string;
 };
 type Info = { width: number; height: number; fps: number; duration: number };
-type PreviewResult = { png: string | null; info: Info | null; diagnostics: Diag[] };
-type Tab = "preview" | "tokens" | "ast" | "ir";
+type Param = {
+  name: string;
+  kind: "slider" | "color" | "text" | "choice";
+  value: number | string;
+  default: number | string;
+  min: number | null;
+  max: number | null;
+  step: number | null;
+  choices: string[];
+};
+type Overrides = Record<string, number | string>;
+type PreviewResult = { png: string | null; info: Info | null; params: Param[] | null; diagnostics: Diag[] };
+type Tab = "preview" | "reference" | "tokens" | "ast" | "ir";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "preview", label: "Preview" },
+  { id: "reference", label: "Reference" },
   { id: "tokens", label: "Tokens" },
   { id: "ast", label: "AST" },
   { id: "ir", label: "IR" },
 ];
 
-const DEFAULT = `// Keyframe Studio: try editing me!
-video { width: 640; height: 360; fps: 30; duration: 5s; background: #0b0c1a; }
-
-// A full-screen gradient backdrop and a glowing sun that fades to transparent.
-rect sky   { x: width / 2; y: height / 2; w: width; h: height; fill: linear(90, #1b1f4b, #0b0c1a, #3a1c5e); }
-circle sun { x: 540; y: 80; r: 60; fill: radial(#fff6b0, #ffb347, #ff6a0000); }
-
-// A card with a gradient outline.
-rect card {
-  x: 190; y: 200; w: 300; h: 200;
-  fill: #ffffff14;
-  stroke: linear(45, #7be0ff, #b46bff);
-  stroke_width: 3;
+function ParamRow({ p, onChange }: { p: Param; onChange: (v: number | string) => void }) {
+  const changed = p.value !== p.default;
+  let control;
+  if (p.kind === "slider") {
+    const v = p.value as number;
+    const lo = Math.min(p.min ?? 0, v);
+    const hi = Math.max(p.max ?? 100, v);
+    const step = p.step ?? (hi - lo > 20 ? 1 : 0.01);
+    control = (
+      <>
+        <input type="range" min={lo} max={hi} step={step} value={v} onChange={(e) => onChange(+e.target.value)} />
+        <input
+          className="num"
+          type="number"
+          step={step}
+          value={Number.isFinite(v) ? +v.toFixed(4) : 0}
+          onChange={(e) => e.target.value !== "" && onChange(+e.target.value)}
+        />
+      </>
+    );
+  } else if (p.kind === "color") {
+    const s = p.value as string;
+    control = (
+      <>
+        <input
+          type="color"
+          value={s.slice(0, 7)}
+          onChange={(e) => onChange(e.target.value + (s.length === 9 ? s.slice(7) : ""))}
+        />
+        <code>{s}</code>
+      </>
+    );
+  } else if (p.kind === "choice") {
+    control = (
+      <select value={p.value as string} onChange={(e) => onChange(e.target.value)}>
+        {p.choices.map((c) => (
+          <option key={c} value={c}>
+            {c}
+          </option>
+        ))}
+      </select>
+    );
+  } else {
+    control = <input className="text" value={p.value as string} onChange={(e) => onChange(e.target.value)} />;
+  }
+  return (
+    <div className={changed ? "param changed" : "param"}>
+      <label title={p.name}>{p.name.replace(/_/g, " ")}</label>
+      {control}
+      <button className="reset" disabled={!changed} onClick={() => onChange(p.default)} title="Back to the script's value">
+        ↺
+      </button>
+    </div>
+  );
 }
-
-text heading {
-  text: "Gradients"; size: 40; x: 60; y: 130; align: "left";
-  fill: linear(0, #7be0ff, #b46bff);
-}
-
-// Wrapped inside a 260px box; alignment decides where the position sits in it.
-text body {
-  text: "Stroke, gradients, alignment and word wrapping, all animatable.";
-  size: 18; x: 60; y: 215; align: "left"; max_width: 260; line_height: 1.3;
-  fill: #d8dcff;
-}
-
-text tag { text: "outlined"; size: 54; x: 470; y: 290; fill: none; stroke: #ffffff; stroke_width: 2; }
-
-// Relative keyframes ("stroke_width + 7" means 7 more than before).
-at 2s card ease in_out { stroke_width: stroke_width + 7; }
-
-// 'ease step' makes the position jump at the same moment the alignment changes.
-at 2.5s body ease step { align: "center"; x: x + 130; }
-at 4s body ease step { align: "right"; x: x + 130; }
-
-at 3s tag ease in_out { rot: -8; stroke: #ffcc00; fill: #ffcc0040; }
-at 4s sun ease in_out { y: y + 40; scale: 1.3; }
-`;
 
 export default function App() {
-  const [src, setSrc] = useState(DEFAULT);
+  const [src, setSrc] = useState(() => {
+    try {
+      return localStorage.getItem("kfs.script") ?? EXAMPLES[0].src;
+    } catch {
+      return EXAMPLES[0].src;
+    }
+  });
   const [t, setT] = useState(0);
   const [img, setImg] = useState("");
   const [info, setInfo] = useState<Info | null>(null);
   const [diags, setDiags] = useState<Diag[]>([]);
   const [tab, setTab] = useState<Tab>("preview");
   const [debug, setDebug] = useState("");
+  const [params, setParams] = useState<Param[]>([]);
+  const [overrides, setOverrides] = useState<Overrides>({});
   const [playing, setPlaying] = useState(false);
   const [out, setOut] = useState("/tmp/out.mp4");
   const [exporting, setExporting] = useState(false);
@@ -90,11 +127,12 @@ export default function App() {
   // Compile + render a preview frame whenever the script or time changes.
   useEffect(() => {
     const id = ++sent.current;
-    invoke<PreviewResult>("preview", { src, t })
+    invoke<PreviewResult>("preview", { src, t, overrides })
       .then((r) => {
         if (id < shown.current) return; // ignore out-of-order responses
         shown.current = id;
         setDiags(r.diagnostics);
+        if (r.params) setParams(r.params); // on errors, keep the last good controls
         if (r.png) setImg(r.png); // on errors, keep the last good frame
         if (r.info) {
           setInfo(r.info);
@@ -102,7 +140,16 @@ export default function App() {
         }
       })
       .catch((e) => setExportMsg(String(e)));
-  }, [src, t]);
+  }, [src, t, overrides]);
+
+  // Autosave the script.
+  useEffect(() => {
+    try {
+      localStorage.setItem("kfs.script", src);
+    } catch {
+      /* storage unavailable: ignore */
+    }
+  }, [src]);
 
   // Debug tabs show an intermediate compiler stage.
   useEffect(() => {
@@ -135,13 +182,33 @@ export default function App() {
     };
   }, []);
 
+  const setParam = (p: Param, v: number | string) => {
+    setOverrides((o) => {
+      const next = { ...o };
+      if (v === p.default) delete next[p.name];
+      else next[p.name] = v;
+      return next;
+    });
+  };
+
+  const bake = async () => {
+    try {
+      setSrc(await invoke<string>("bake", { src, overrides }));
+      setOverrides({});
+    } catch (e) {
+      setExportMsg(String(e));
+    }
+  };
+
+  const modified = params.filter((p) => p.value !== p.default).length;
+
   const doExport = async () => {
     setPlaying(false);
     setExporting(true);
     setProgress(0);
     setExportMsg("");
     try {
-      setExportMsg(await invoke<string>("export", { src, path: out }));
+      setExportMsg(await invoke<string>("export", { src, path: out, overrides }));
     } catch (e) {
       setExportMsg("Export failed: " + e);
     } finally {
@@ -169,6 +236,28 @@ export default function App() {
       <header>
         <div className="logo">▶ Keyframe Studio</div>
         <div className="spacer" />
+        <select
+          className="path"
+          style={{ flex: "0 0 auto", width: "auto" }}
+          value=""
+          onChange={(e) => {
+            const ex = EXAMPLES.find((x) => x.id === e.target.value);
+            if (ex) {
+              setSrc(ex.src);
+              setT(0);
+              setPlaying(false);
+            }
+          }}
+        >
+          <option value="" disabled>
+            Examples…
+          </option>
+          {EXAMPLES.map((x) => (
+            <option key={x.id} value={x.id}>
+              {x.label}
+            </option>
+          ))}
+        </select>
         <input
           className="path"
           value={out}
@@ -241,6 +330,25 @@ export default function App() {
                   {t.toFixed(2)} / {dur.toFixed(2)}s
                 </span>
               </div>
+              {params.length > 0 && (
+                <div className="inspector">
+                  <div className="inspector-head">
+                    <span>Inspector</span>
+                    <div className="spacer" />
+                    <button disabled={modified === 0} onClick={() => setOverrides({})}>
+                      Reset
+                    </button>
+                    <button disabled={modified === 0} onClick={bake} title="Write these values into the script">
+                      Bake into script
+                    </button>
+                  </div>
+                  <div className="params">
+                    {params.map((p) => (
+                      <ParamRow key={p.name} p={p} onChange={(v) => setParam(p, v)} />
+                    ))}
+                  </div>
+                </div>
+              )}
             </>
           ) : (
             <pre className="debug">{debug}</pre>

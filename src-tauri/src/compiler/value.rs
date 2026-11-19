@@ -162,12 +162,15 @@ impl Value {
     /// Interpolate towards `other` by `t` in `0..=1`. Values that cannot be
     /// blended (strings, mismatched gradients) hold until `t` reaches 1, then jump.
     pub fn lerp(&self, other: &Value, t: f64) -> Value {
+        // Easings like `back` and `elastic` overshoot 0..1. That is fine for
+        // numbers (it is the point), but colors would go out of gamut.
+        let tc = t.clamp(0.0, 1.0);
         let blended = match (self, other) {
             (Value::Number(a), Value::Number(b)) => Some(Value::Number(a + (b - a) * t)),
-            (Value::Color(a), Value::Color(b)) => Some(Value::Color(a.lerp(*b, t))),
-            (Value::Gradient(a), Value::Gradient(b)) => a.lerp(b, t).map(Value::Gradient),
-            (Value::Color(c), Value::Gradient(g)) => g.flat_like(*c).lerp(g, t).map(Value::Gradient),
-            (Value::Gradient(g), Value::Color(c)) => g.lerp(&g.flat_like(*c), t).map(Value::Gradient),
+            (Value::Color(a), Value::Color(b)) => Some(Value::Color(a.lerp(*b, tc))),
+            (Value::Gradient(a), Value::Gradient(b)) => a.lerp(b, tc).map(Value::Gradient),
+            (Value::Color(c), Value::Gradient(g)) => g.flat_like(*c).lerp(g, tc).map(Value::Gradient),
+            (Value::Gradient(g), Value::Color(c)) => g.lerp(&g.flat_like(*c), tc).map(Value::Gradient),
             _ => None,
         };
         blended.unwrap_or_else(|| if t >= 1.0 { other.clone() } else { self.clone() })

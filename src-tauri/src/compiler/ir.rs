@@ -19,6 +19,14 @@ pub enum Easing {
     In,
     Out,
     InOut,
+    /// Smoothstep: gentle at both ends.
+    Smooth,
+    /// Overshoots the target slightly, then settles.
+    Back,
+    /// Lands on the target and bounces.
+    Bounce,
+    /// Springs past the target and wobbles to rest.
+    Elastic,
     Step,
 }
 
@@ -37,6 +45,33 @@ impl Easing {
                     1.0 - (-2.0 * t + 2.0).powi(2) / 2.0
                 }
             }
+            Easing::Smooth => t * t * (3.0 - 2.0 * t),
+            Easing::Back => {
+                let (c1, c3) = (1.70158, 2.70158);
+                1.0 + c3 * (t - 1.0).powi(3) + c1 * (t - 1.0).powi(2)
+            }
+            Easing::Bounce => {
+                let (n1, d1) = (7.5625, 2.75);
+                if t < 1.0 / d1 {
+                    n1 * t * t
+                } else if t < 2.0 / d1 {
+                    let t = t - 1.5 / d1;
+                    n1 * t * t + 0.75
+                } else if t < 2.5 / d1 {
+                    let t = t - 2.25 / d1;
+                    n1 * t * t + 0.9375
+                } else {
+                    let t = t - 2.625 / d1;
+                    n1 * t * t + 0.984375
+                }
+            }
+            Easing::Elastic => {
+                if t <= 0.0 || t >= 1.0 {
+                    t
+                } else {
+                    2f64.powf(-10.0 * t) * ((t * 10.0 - 0.75) * (2.0 * std::f64::consts::PI / 3.0)).sin() + 1.0
+                }
+            }
             Easing::Step => {
                 if t >= 1.0 {
                     1.0
@@ -52,6 +87,8 @@ impl Easing {
 pub struct Program {
     pub video: Video,
     pub shapes: Vec<Shape>,
+    /// Inspector parameters (`@slider ...`), in source order.
+    pub params: Vec<super::params::Param>,
 }
 
 #[derive(Clone, Debug, Serialize)]

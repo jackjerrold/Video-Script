@@ -7,6 +7,7 @@ mod video;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use compiler::diagnostics::{DiagnosticView, Severity};
 use compiler::ir::Program;
+use compiler::params::{Overrides, Param};
 use compiler::span::Source;
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
@@ -23,18 +24,25 @@ struct Cached {
 #[derive(Default)]
 struct Cache(Mutex<Option<Cached>>);
 
-fn compile_cached(cache: &Cache, src: &str) -> (Option<Arc<Program>>, Vec<DiagnosticView>) {
+fn compile_cached(
+    cache: &Cache,
+    src: &str,
+    overrides: &Overrides,
+) -> (Option<Arc<Program>>, Vec<DiagnosticView>) {
+    // The cache key includes the inspector values: dragging a slider recompiles,
+    // scrubbing the timeline does not.
+    let key = format!("{}\u{0}{}", src, serde_json::to_string(overrides).unwrap_or_default());
     let mut guard = cache.0.lock().unwrap();
     if let Some(c) = guard.as_ref() {
-        if c.src == src {
+        if c.src == key {
             return (c.program.clone(), c.diagnostics.clone());
         }
     }
     let source = Source::new(src);
-    let out = compiler::compile(&source);
+    let out = compiler::compile_with(&source, overrides);
     let views: Vec<DiagnosticView> = out.diagnostics.iter().map(|d| d.view(&source)).collect();
     let program = out.program.map(Arc::new);
-    *guard = Some(Cached { src: src.to_string(), program: program.clone(), diagnostics: views.clone() });
+    *guard = Some(Cached { src: key, program: program.clone(), diagnostics: views.clone() });
     (program, views)
 }
 
@@ -51,12 +59,20 @@ struct Preview {
     /// `None` when the script has errors; the UI keeps showing the last good frame.
     png: Option<String>,
     info: Option<VideoInfo>,
+    /// Inspector parameters; `None` when the script has errors (the UI keeps the last good list).
+    params: Option<Vec<Param>>,
     diagnostics: Vec<DiagnosticView>,
 }
 
 #[tauri::command]
-fn preview(cache: tauri::State<'_, Cache>, src: String, t: f64) -> Preview {
-    let (program, diagnostics) = compile_cached(cache.inner(), &src);
+fn preview(
+    cache: tauri::State<'_, Cache>,
+    src: String,
+    t: f64,
+    overrides: Option<Overrides>,
+) -> Preview {
+    let (program, diagnostics) = compile_cached(cache.inner(), &src, &overrides.unwrap_or_default());
+    let params = program.as_ref().map(|p| p.params.clone());
     let (png, info) = match program {
         Some(p) => {
             let frame = compiler::eval::eval(&p, t);
@@ -68,7 +84,7 @@ fn preview(cache: tauri::State<'_, Cache>, src: String, t: f64) -> Preview {
         }
         None => (None, None),
     };
-    Preview { png, info, diagnostics }
+    Preview { png, info, params, diagnostics }
 }
 
 /// Dump an intermediate stage ("tokens", "ast" or "ir") as text, for the debug tabs.
@@ -77,14 +93,25 @@ fn debug_stage(src: String, stage: String) -> Result<String, String> {
     compiler::debug_stage(&Source::new(src), &stage)
 }
 
+/// Write the inspector's current values into the script text.
+#[tauri::command]
+fn bake(cache: tauri::State<'_, Cache>, src: String, overrides: Option<Overrides>) -> Result<String, String> {
+    let (program, _) = compile_cached(cache.inner(), &src, &overrides.unwrap_or_default());
+    match program {
+        Some(p) => Ok(compiler::params::bake(&src, &p.params)),
+        None => Err("fix the errors first".into()),
+    }
+}
+
 #[tauri::command]
 async fn export(
     app: tauri::AppHandle,
     cache: tauri::State<'_, Cache>,
     src: String,
     path: String,
+    overrides: Option<Overrides>,
 ) -> Result<String, String> {
-    let (program, diagnostics) = compile_cached(cache.inner(), &src);
+    let (program, diagnostics) = compile_cached(cache.inner(), &src, &overrides.unwrap_or_default());
     let Some(program) = program else {
         let first = diagnostics.iter().find(|d| d.severity == Severity::Error);
         return Err(match first {
@@ -109,7 +136,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(Cache::default())
-        .invoke_handler(tauri::generate_handler![preview, debug_stage, export])
+        .invoke_handler(tauri::generate_handler![preview, debug_stage, bake, export])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

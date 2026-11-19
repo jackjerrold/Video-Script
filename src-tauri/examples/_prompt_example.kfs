@@ -1,0 +1,22 @@
+video { width: 640; height: 360; fps: 30; duration: 6s; background: #0f1020; }
+
+let accent = hsl(200, 90, 60);
+let cx = width / 2;
+
+rect bg { x: cx; y: 180; w: width; h: height; fill: linear(90, #1b1f4b, #0f1020); }
+
+group badge {
+  x: 120; y: 220;
+  circle disc { r: 40; fill: accent; }
+  star spark  { y: -60; r: 14; points: 4; inner: 0.4; fill: #ffcc00; }
+}
+
+text title {
+  text: "Hello"; font: "display"; size: 72;
+  x: cx; y: 110; fill: #ffffff; opacity: 0; blur: 20;
+}
+
+at 1s title ease out { opacity: 1; blur: 0; }
+at 3s badge ease in_out { x: x + 400; rot: 90; }
+at 6s badge ease in_out { x: x - 400; rot: 0; }
+at 3s spark { scale: 1.5; fill: #ff5555 ease step; }

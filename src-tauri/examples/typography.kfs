@@ -1,0 +1,23 @@
+// Fonts, alignment and word wrapping.
+video { width: 640; height: 360; fps: 30; duration: 6s; background: #0f1020; }
+
+let ink = #d8dcff;
+
+text f1 { text: "sans: Poppins Medium";  font: "sans";    size: 26; x: 40; y: 70;  align: "left"; fill: ink; }
+text f2 { text: "bold: Poppins Bold";    font: "bold";    size: 26; x: 40; y: 120; align: "left"; fill: ink; }
+text f3 { text: "serif: Lora";           font: "serif";   size: 26; x: 40; y: 170; align: "left"; fill: ink; }
+text f4 { text: "mono: Anonymous Pro";    font: "mono";    size: 26; x: 40; y: 220; align: "left"; fill: ink; }
+text f5 { text: "DISPLAY: ANTON";         font: "display"; size: 30; x: 40; y: 275; align: "left"; fill: #ffcc00; }
+
+line divider { x: 360; y: 40; x2: 0; y2: 280; stroke: #ffffff30; stroke_width: 2; }
+
+text body {
+  text: "Word wrapping breaks lines at spaces so none is wider than max_width.";
+  font: "serif"; size: 20; x: 385; y: 180;
+  max_width: 230; line_height: 1.35; align: "left"; fill: ink;
+}
+
+// 'ease step' moves the anchor at the same instant the alignment changes.
+at 2s body ease step { align: "center"; x: x + 115; }
+at 4s body ease step { align: "right"; x: x + 115; }
+at 3s f5 ease in_out { fill: #ff5555; stroke: #ffffff; stroke_width: 1; }

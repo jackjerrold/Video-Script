@@ -1,0 +1,30 @@
+// Groups: animate a whole character as one unit, and its parts on their own.
+video { width: 640; height: 360; fps: 30; duration: 6s; background: #0f1020; }
+
+rect ground { x: width / 2; y: 330; w: width; h: 60; fill: #1b1f4b; }
+
+group robot {
+  x: 100; y: 250;
+  rect body    { w: 70; h: 90; radius: 14; fill: #55aaff; }
+  circle head  { y: -70; r: 28; fill: #ffcc00; }
+  circle eye   { x: 10; y: -74; r: 6; fill: #0f1020; }
+  line antenna { y: -98; x2: 0; y2: -22; stroke: #ffcc00; stroke_width: 3; }
+  star spark   { y: -126; r: 10; points: 4; inner: 0.4; fill: #ff5555; }
+  rect arm     { x: 50; y: -10; w: 40; h: 12; radius: 6; fill: #ff5555; }
+}
+
+text caption {
+  text: "groups move together"; font: "mono"; size: 20;
+  x: width / 2; y: 60; fill: #d8dcff; opacity: 0;
+}
+
+at 1s caption ease out { opacity: 1; }
+
+at 3s robot ease in_out { x: x + 440; rot: 12; }
+at 6s robot ease in_out { x: x - 440; rot: 0; }
+
+// The parts still animate inside the moving group.
+at 2s head ease out    { y: y - 14; }
+at 3s head ease bounce { y: y + 14; }
+at 3s spark ease in_out { rot: 90; scale: 1.5; }
+at 6s spark ease in_out { rot: 0; scale: 1; }

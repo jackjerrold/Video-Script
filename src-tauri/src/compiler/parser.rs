@@ -160,7 +160,7 @@ impl Parser {
                         return;
                     }
                 }
-                TokenKind::Let | TokenKind::At | TokenKind::Video | TokenKind::Group if depth == 0 => return,
+                TokenKind::Let | TokenKind::At | TokenKind::AtSign | TokenKind::Video | TokenKind::Group if depth == 0 => return,
                 _ => {
                     self.bump();
                 }
@@ -176,14 +176,30 @@ impl Parser {
                 let body = self.parse_block()?;
                 Ok(Item { span: start.to(body.span), kind: ItemKind::Video(body) })
             }
-            TokenKind::Let => {
+            TokenKind::AtSign => {
                 self.bump();
-                let name = self.expect_ident("a variable name")?;
-                self.expect(&TokenKind::Eq, "'='")?;
-                let value = self.parse_expr()?;
-                let end = self.expect_semi()?;
-                Ok(Item { span: start.to(end), kind: ItemKind::Let { name, value } })
+                let name = self.expect_ident("an attribute name such as 'slider'")?;
+                let mut args = Vec::new();
+                if self.eat(&TokenKind::LParen) {
+                    if !self.check(&TokenKind::RParen) {
+                        loop {
+                            args.push(self.parse_expr()?);
+                            if !self.eat(&TokenKind::Comma) {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(&TokenKind::RParen, "')'")?;
+                }
+                let attr = Attr { name, args, span: start.to(self.prev_span()) };
+                if !self.check(&TokenKind::Let) {
+                    let found = self.peek().kind.describe();
+                    let span = self.peek().span;
+                    return self.error(span, format!("an attribute must be followed by 'let', found {found}"));
+                }
+                self.parse_let(Some(attr), start)
             }
+            TokenKind::Let => self.parse_let(None, start),
             TokenKind::At => {
                 self.bump();
                 let time = self.parse_expr()?;
@@ -213,6 +229,15 @@ impl Parser {
     ///
     /// Inside the body, what comes next decides what it is: `IDENT :` is a
     /// property, `IDENT IDENT` starts a child shape, `group` a nested group.
+    fn parse_let(&mut self, attr: Option<Attr>, start: Span) -> PResult<Item> {
+        self.bump(); // 'let'
+        let name = self.expect_ident("a variable name")?;
+        self.expect(&TokenKind::Eq, "'='")?;
+        let value = self.parse_expr()?;
+        let end = self.expect_semi()?;
+        Ok(Item { span: start.to(end), kind: ItemKind::Let { name, value, attr } })
+    }
+
     fn parse_group(&mut self) -> PResult<Item> {
         let start = self.bump().span; // 'group'
         let name = self.expect_ident("a name for the group")?;
